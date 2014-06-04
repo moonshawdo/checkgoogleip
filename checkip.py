@@ -42,6 +42,11 @@ log_lock = threading.Lock()
 "连接超时设置"
 g_commtimeout = 7
 
+g_filedir = os.path.dirname(__file__)
+g_cacertfile = os.path.join(g_filedir, "cacert.pem")
+g_ipfile = os.path.join(g_filedir, "ip.txt")
+g_ssldomain = "google.com"
+
 
 def PRINT(strlog):
     try:
@@ -58,7 +63,7 @@ def testipchain(ip):
         s = socket.socket()
         s.settimeout(g_commtimeout)
         "需要指定证书文件，这样才可以在握手中获取对方服务器证书信息"
-        c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs='cacert.pem')
+        c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile)
         c.settimeout(g_commtimeout)
         PRINT("try connect to %s " % (ip))
         c.connect((ip, 443))
@@ -108,7 +113,7 @@ class Ping(threading.Thread):
 
     def run(self):
         (ssldomain, costtime) = testipchain(self.ip_address)
-        if ssldomain is not None and ssldomain.lower() == "google.com":
+        if ssldomain is not None and ssldomain.lower() == g_ssldomain:
             try:
                 g_lock.acquire()
                 ip_list.append((costtime, self.ip_address, ssldomain))
@@ -205,31 +210,26 @@ def list_ping():
             ping_thread.start()
             i += 1
 
-    PRINT('start all thread ok\n')
+    PRINT('start all thread ok')
     for mythread in threadlist:
         mythread.join()
 
     ip_list.sort()
-    # I want PRINT by fast!!! this doesn't work.
-    ssldomainip = {}
-    PRINT('try to check ssl domain')
-    for ip in ip_list:
-        PRINT("[%s] %d ms,domain: %s" % (ip[1], ip[0], ip[2]))
-        domain = ip[2]
-        if domain is None:
-            domain = "unknown"
-        if domain in ssldomainip:
-            strdata = ssldomainip[domain]
-            ssldomainip[domain] = strdata + "|" + ip[1]
-        else:
-            ssldomainip[domain] = ip[1]
+
+    PRINT('try to collect ssl result')
     op = 'wb'
     if sys.version_info[0] == 3:
         op = 'w'
-    ff = open('ip.txt', op)
-    for key, value in ssldomainip.items():
-        ff.write(value)
-        ff.write("\r\n")
+    ff = open(g_ipfile, op)
+    ncount = 0
+    for ip in ip_list:
+        domain = ip[2]
+        PRINT("[%s] %d ms,domain: %s" % (ip[1], ip[0], domain))
+        if domain is not None and domain.lower() == g_ssldomain:
+            ff.write(ip[1])
+            ff.write("|")
+            ncount += 1
+    PRINT("write to file %s ok,count:%d " % (g_ipfile, ncount))
     ff.close()
 
 

@@ -19,10 +19,7 @@ checkgoogleip
 使用方法
 -------------
 ### windows
-  可以放在把checkip.py放在goagent/local目录下面，由于cacert.pem是取自goagent/local目录里面的同名文件，因此不需要复制cacert.pem到该目录，
-  然后在命令行中先切换前该目录，然后执行
-  python27.exe checkip.py
-
+  可以放在把checkip.py与checkip.bat放在goagent/local目录下面，由于cacert.pem是取自goagent/local目录里面的同名文件，因此不需要复制cacert.pem到该目录，然后执行checkip.bat
   如果执行成功，会在该目录新建一个ip.txt文件，里面的IP列表就是可用列表
 
 ### linux
@@ -31,7 +28,3 @@ checkgoogleip
 
 
 由于开发时主要用python2.7版本，不过好像在python3.4版本也可以执行
-
-
-
-
