@@ -20,6 +20,7 @@ checkgoogleip
 -------------
 ### windows
   可以放在把checkip.py与checkip.bat放在goagent/local目录下面，由于cacert.pem是取自goagent/local目录里面的同名文件，因此不需要复制cacert.pem到该目录，然后执行checkip.bat
+  
   如果执行成功，会在该目录新建一个ip.txt文件，里面的IP列表就是可用列表
 
 ### linux
