@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-__author__ = 'moonshawdo'
+__author__ = 'moonshawdo@gamil.com'
 """
 验证哪些IP可以用在gogagent中
 主要是检查这个ip是否可以连通，并且证书是否为google.com
@@ -14,10 +14,17 @@ import ssl
 import re
 
 if sys.version_info[0] == 3:
+    from queue import Queue,Empty
     try:
         from functools import reduce
     finally:
         pass
+    try:
+        xrange
+    except NameError:
+        xrange = range
+else:
+    from Queue import Queue,Empty
 import time
 """
 ip_str_list为需要查找的IP地址，第一组的格式：
@@ -43,18 +50,22 @@ g_commtimeout = 7
 g_filedir = os.path.dirname(__file__)
 g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
-g_ssldomain = "google.com"
+g_ssldomain = ("google.com", "google.pk","google.co.uk")
+g_maxthreads = 256
+g_queue = Queue()
+g_finish = threading.Event()
+g_ready = threading.Event()
 
 
 def PRINT(strlog):
     try:
         log_lock.acquire()
-        print strlog
+        print(strlog)
     finally:
         log_lock.release()
 
 
-def testipchain(ip):
+def testipchain(threadname, ip):
     time_begin = time.time()
     try:
         costtime = 0
@@ -63,7 +74,7 @@ def testipchain(ip):
         "需要指定证书文件，这样才可以在握手中获取对方服务器证书信息"
         c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile)
         c.settimeout(g_commtimeout)
-        PRINT("try connect to %s " % (ip))
+        PRINT("[%s]try connect to %s " % (threadname, ip))
         c.connect((ip, 443))
         cert = c.getpeercert()
         time_end = time.time()
@@ -84,39 +95,48 @@ def testipchain(ip):
                             domain = item[1].encode("utf-8")
                         else:
                             domain = item[1]
-                        PRINT("ip: %s,CN: %s " % (ip, domain))
+                        PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
                         return domain, costtime
-            PRINT("%s can not get commonName: %s " % (ip, subjectitems))
+            PRINT("[%s]%s can not get commonName: %s " % (threadname, ip, subjectitems))
         else:
-            PRINT("%s can not get subject: %s " % (ip, cert))
+            PRINT("[%s]%s can not get subject: %s " % (threadname, ip, cert))
         c.shutdown()
         s.close()
         return None, costtime
     except ssl.SSLError as e:
         time_end = time.time()
         costtime = int(time_end * 1000 - time_begin * 1000)
-        PRINT("SSL Exception(%s): %s, times:%d ms " % (ip, e, costtime))
+        PRINT("[%s]SSL Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
         return None, costtime
     except IOError as e:
         time_end = time.time()
         costtime = int(time_end * 1000 - time_begin * 1000)
-        PRINT("Catch IO Exception(%s): %s, times:%d ms " % (ip, e, costtime))
+        PRINT("[%s]Catch IO Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
         return None, costtime
 
 
 class Ping(threading.Thread):
-    def __init__(self, ip_address):
+    def __init__(self):
         threading.Thread.__init__(self)
-        self.ip_address = ip_address
 
     def run(self):
-        (ssldomain, costtime) = testipchain(self.ip_address)
-        if ssldomain is not None and ssldomain.lower() == g_ssldomain:
+        while not g_ready.is_set():
+            g_ready.wait(5)
+        while not g_finish.is_set():
             try:
-                g_lock.acquire()
-                ip_list.append((costtime, self.ip_address, ssldomain))
-            finally:
-                g_lock.release()
+                ipaddr = g_queue.get(True, 2)
+                (ssldomain, costtime) = testipchain(self.getName(), ipaddr)
+                if ssldomain is not None and ssldomain.lower() in g_ssldomain:
+                    try:
+                        g_lock.acquire()
+                        ip_list.append((costtime, ipaddr, ssldomain))
+                    finally:
+                        g_lock.release()
+                g_queue.task_done()
+            except Empty:
+                pass
+            "for thread yield"
+            time.sleep(0.0001)
 
 
 def from_string(s):
@@ -189,28 +209,36 @@ def list_ping():
             if checkipvalid(begin) == 0 or checkipvalid(end) == 0:
                 PRINT("ip format is error,line:%s, begin: %s,end: %s" % (line, begin, end))
                 sys.exit(1)
-            iprangelist.append((begin, end))
+            nbegin = from_string(begin)
+            nend = from_string(end)
+            while nbegin <= nend:
+                g_queue.put(to_string(nbegin))
+                nbegin += 1
 
-    for iprange in iprangelist:
-        nbegin = from_string(iprange[0])
-        nend = from_string(iprange[1])
-        i = nbegin
-        cnt = threading.activeCount()
-        "增加线程数限制，避免大量并发查询"
-        while cnt > 512:
-            PRINT("currecnt thread count is %d,need wait..." % cnt)
-            time.sleep(2)
-            cnt = threading.activeCount()
-        while i <= nend:
-            ping_thread = Ping(to_string(i))
-            ping_thread.setDaemon(True)
-            threadlist.append(ping_thread)
+    qsize = g_queue.qsize()
+    maxthreads = qsize if qsize < g_maxthreads else g_maxthreads
+    PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize) )
+    for i in xrange(1, maxthreads + 1):
+        ping_thread = Ping()
+        ping_thread.setDaemon(True)
+        try:
             ping_thread.start()
-            i += 1
+        except threading.ThreadError as e:
+            PRINT('start new thread except: %s  ' % (e))
+            "can not create new thread"
+            break
+        threadlist.append(ping_thread)
+    g_ready.set()
+    try:
+        while g_queue.unfinished_tasks != 0:
+            g_finish.wait(1)
+    except KeyboardInterrupt:
+        g_finish.set()
+        raise
+    g_finish.set()
 
-    PRINT('start all thread ok')
-    for mythread in threadlist:
-        mythread.join()
+    for thread in threadlist:
+        thread.join()
 
     ip_list.sort()
 
@@ -223,7 +251,7 @@ def list_ping():
     for ip in ip_list:
         domain = ip[2]
         PRINT("[%s] %d ms,domain: %s" % (ip[1], ip[0], domain))
-        if domain is not None and domain.lower() == g_ssldomain:
+        if domain is not None:
             ff.write(ip[1])
             ff.write("|")
             ncount += 1
