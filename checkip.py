@@ -12,9 +12,11 @@ import threading
 import socket
 import ssl
 import re
+import select
 
 if sys.version_info[0] == 3:
-    from queue import Queue,Empty
+    from queue import Queue, Empty
+
     try:
         from functools import reduce
     finally:
@@ -24,8 +26,21 @@ if sys.version_info[0] == 3:
     except NameError:
         xrange = range
 else:
-    from Queue import Queue,Empty
+    from Queue import Queue, Empty
 import time
+
+g_useOpenSSL = 1
+if g_useOpenSSL == 1:
+    try:
+        import OpenSSL.SSL
+
+        SSLError = OpenSSL.SSL.WantReadError
+    except ImportError:
+        g_useOpenSSL = 0
+        SSLError = ssl.SSLError
+else:
+    SSLError = ssl.SSLError
+
 """
 ip_str_list为需要查找的IP地址，第一组的格式：
 1.xxx.xxx.xxx.xxx-xx.xxx.xxx.xxx
@@ -50,8 +65,10 @@ g_commtimeout = 7
 g_filedir = os.path.dirname(__file__)
 g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
-g_ssldomain = ("google.com", "google.pk","google.co.uk")
-g_maxthreads = 256
+g_ssldomain = ("google.com", "google.pk", "google.co.uk")
+g_maxthreads = 768
+if g_useOpenSSL == 0:
+    g_maxthreads = 256
 g_queue = Queue()
 g_finish = threading.Event()
 g_ready = threading.Event()
@@ -65,79 +82,145 @@ def PRINT(strlog):
         log_lock.release()
 
 
-def testipchain(threadname, ip):
-    time_begin = time.time()
-    try:
-        costtime = 0
-        s = socket.socket()
-        s.settimeout(g_commtimeout)
-        "需要指定证书文件，这样才可以在握手中获取对方服务器证书信息"
-        c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile)
-        c.settimeout(g_commtimeout)
-        PRINT("[%s]try connect to %s " % (threadname, ip))
-        c.connect((ip, 443))
-        cert = c.getpeercert()
-        time_end = time.time()
-        costtime = int(time_end * 1000 - time_begin * 1000)
-        '''cert format:
-        {'notAfter': 'Aug 20 00:00:00 2014 GMT', 'subjectAltName': (('DNS', 'google.com'),
-          ('DNS', 'youtubeeducation.com')),
-          'subject': ((('countryName', u'US'),), (('stateOrProvinceName', u'California'),),
-          (('localityName', u'Mountain View'),), (('organizationName', u'Google Inc'),),
-          (('commonName', u'google.com'),))
-        }'''
-        if 'subject' in cert:
-            subjectitems = cert['subject']
-            for mysets in subjectitems:
-                for item in mysets:
-                    if item[0] == "commonName":
-                        if not isinstance(item[1], str):
-                            domain = item[1].encode("utf-8")
+class my_ssl_wrap(object):
+    ssl_cxt = None
+    ssl_cxt_lock = threading.Lock()
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def initsslcxt():
+        if my_ssl_wrap.ssl_cxt is not None:
+            return
+        my_ssl_wrap.ssl_cxt_lock.acquire()
+        if my_ssl_wrap.ssl_cxt is not None:
+            return
+        my_ssl_wrap.ssl_cxt = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
+        my_ssl_wrap.ssl_cxt.set_timeout(g_commtimeout)
+        PRINT("init ssl context ok")
+        my_ssl_wrap.ssl_cxt_lock.release()
+
+    def getssldomain(self, threadname, ip):
+        time_begin = time.time()
+        try:
+            s = socket.socket()
+            PRINT("[%s]try connect to %s " % (threadname, ip))
+            if g_useOpenSSL:
+                my_ssl_wrap.initsslcxt()
+                s.settimeout(g_commtimeout)
+                s.connect((ip, 443))
+                c = OpenSSL.SSL.Connection(my_ssl_wrap.ssl_cxt, s)
+                c.set_connect_state()
+                c.settimeout(g_commtimeout)
+                while True:
+                    try:
+                        c.do_handshake()
+                        break
+                    except SSLError:
+                        infds, outfds, errfds = select.select([s, ], [], [], g_commtimeout)
+                        if len(infds) == 0:
+                            raise SSLError("do_handshake timeout")
                         else:
-                            domain = item[1]
+                            pass
+                    except OpenSSL.SSL.SysCallError as e:
+                        raise SSLError(e.args)
+                cert = c.get_peer_certificate()
+                time_end = time.time()
+                costtime = int(time_end * 1000 - time_begin * 1000)
+                for subject in cert.get_subject().get_components():
+                    if subject[0] == "CN":
+                        domain = subject[1]
                         PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
+                        c.shutdown()
+                        s.close()
                         return domain, costtime
-            PRINT("[%s]%s can not get commonName: %s " % (threadname, ip, subjectitems))
-        else:
-            PRINT("[%s]%s can not get subject: %s " % (threadname, ip, cert))
-        c.shutdown()
-        s.close()
-        return None, costtime
-    except ssl.SSLError as e:
-        time_end = time.time()
-        costtime = int(time_end * 1000 - time_begin * 1000)
-        PRINT("[%s]SSL Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
-        return None, costtime
-    except IOError as e:
-        time_end = time.time()
-        costtime = int(time_end * 1000 - time_begin * 1000)
-        PRINT("[%s]Catch IO Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
-        return None, costtime
+                PRINT("[%s]%s can not get CN: %s " % (threadname, ip, cert.get_subject().get_components()))
+                c.shutdown()
+                s.close()
+                return None, costtime
+            else:
+                s.settimeout(g_commtimeout)
+                c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile,
+                                    do_handshake_on_connect=False)
+                c.connect((ip, 443))
+                c.do_handshake()
+                cert = c.getpeercert()
+                time_end = time.time()
+                costtime = int(time_end * 1000 - time_begin * 1000)
+                '''cert format:
+                {'notAfter': 'Aug 20 00:00:00 2014 GMT', 'subjectAltName': (('DNS', 'google.com'),
+                  ('DNS', 'youtubeeducation.com')),
+                  'subject': ((('countryName', u'US'),), (('stateOrProvinceName', u'California'),),
+                  (('localityName', u'Mountain View'),), (('organizationName', u'Google Inc'),),
+                  (('commonName', u'google.com'),))
+                }'''
+                if 'subject' in cert:
+                    subjectitems = cert['subject']
+                    for mysets in subjectitems:
+                        for item in mysets:
+                            if item[0] == "commonName":
+                                if not isinstance(item[1], str):
+                                    domain = item[1].encode("utf-8")
+                                else:
+                                    domain = item[1]
+                                PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
+                                c.shutdown(2)
+                                s.close()
+                                return domain, costtime
+                    PRINT("[%s]%s can not get commonName: %s " % (threadname, ip, subjectitems))
+                else:
+                    PRINT("[%s]%s can not get subject: %s " % (threadname, ip, cert))
+                c.shutdown(2)
+                s.close()
+                return None, costtime
+        except SSLError as e:
+            time_end = time.time()
+            costtime = int(time_end * 1000 - time_begin * 1000)
+            PRINT("[%s]SSL Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
+            return None, costtime
+        except IOError as e:
+            time_end = time.time()
+            costtime = int(time_end * 1000 - time_begin * 1000)
+            PRINT("[%s]Catch IO Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
+            return None, costtime
 
 
 class Ping(threading.Thread):
+    ncount = 0
+    ncount_lock = threading.Lock()
     def __init__(self):
         threading.Thread.__init__(self)
+        Ping.ncount += 1
 
-    def run(self):
+    def runJob(self):
         while not g_ready.is_set():
             g_ready.wait(5)
-        while not g_finish.is_set():
+        while not g_finish.is_set() and g_queue.qsize() > 0:
             try:
-                ipaddr = g_queue.get(True, 2)
-                (ssldomain, costtime) = testipchain(self.getName(), ipaddr)
+                ipaddr = g_queue.get_nowait()
+                g_queue.task_done()
+                ssl_obj = my_ssl_wrap()
+                (ssldomain, costtime) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None and ssldomain.lower() in g_ssldomain:
                     try:
                         g_lock.acquire()
                         ip_list.append((costtime, ipaddr, ssldomain))
                     finally:
                         g_lock.release()
-                g_queue.task_done()
             except Empty:
-                pass
+                break
             "for thread yield"
             time.sleep(0.0001)
-
+    def run(self):
+        try:
+            self.runJob()
+        except Exception:
+            raise
+        finally:
+            Ping.ncount_lock.acquire()
+            Ping.ncount -= 1
+            Ping.ncount_lock.release()
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
@@ -194,6 +277,8 @@ def splitip(strline):
 
 
 def list_ping():
+    if g_useOpenSSL == 1:
+        PRINT("suport PyOpenSSL")
     threadlist = []
     iprangelist = []
     "split ip,check ip valid and get ip begin to end"
@@ -217,7 +302,7 @@ def list_ping():
 
     qsize = g_queue.qsize()
     maxthreads = qsize if qsize < g_maxthreads else g_maxthreads
-    PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize) )
+    PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize))
     for i in xrange(1, maxthreads + 1):
         ping_thread = Ping()
         ping_thread.setDaemon(True)
@@ -230,15 +315,13 @@ def list_ping():
         threadlist.append(ping_thread)
     g_ready.set()
     try:
-        while g_queue.unfinished_tasks != 0:
+        while Ping.ncount != 0:
             g_finish.wait(1)
+        g_finish.set()
     except KeyboardInterrupt:
         g_finish.set()
-        raise
-    g_finish.set()
-
-    for thread in threadlist:
-        thread.join()
+        for thread in threadlist:
+            thread.join()
 
     ip_list.sort()
 
