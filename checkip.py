@@ -105,7 +105,7 @@ class my_ssl_wrap(object):
         time_begin = time.time()
         try:
             s = socket.socket()
-            PRINT("[%s]try connect to %s " % (threadname, ip))
+            #PRINT("[%s]try connect to %s " % (threadname, ip))
             if g_useOpenSSL:
                 my_ssl_wrap.initsslcxt()
                 s.settimeout(g_commtimeout)
@@ -198,7 +198,8 @@ class Ping(threading.Thread):
             g_ready.wait(5)
         while not g_finish.is_set() and g_queue.qsize() > 0:
             try:
-                ipaddr = g_queue.get_nowait()
+                addrint = g_queue.get_nowait()
+                ipaddr = to_string(addrint)
                 g_queue.task_done()
                 ssl_obj = my_ssl_wrap()
                 (ssldomain, costtime) = ssl_obj.getssldomain(self.getName(), ipaddr)
@@ -297,9 +298,10 @@ def list_ping():
             nbegin = from_string(begin)
             nend = from_string(end)
             while nbegin <= nend:
-                g_queue.put(to_string(nbegin))
+                g_queue.put(nbegin)
                 nbegin += 1
 
+    threading.stack_size(96*1024)
     qsize = g_queue.qsize()
     maxthreads = qsize if qsize < g_maxthreads else g_maxthreads
     PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize))
@@ -309,7 +311,7 @@ def list_ping():
         try:
             ping_thread.start()
         except threading.ThreadError as e:
-            PRINT('start new thread except: %s  ' % (e))
+            PRINT('start new thread except: %s,work thread cnt: %d' % (e, Ping.ncount))
             "can not create new thread"
             break
         threadlist.append(ping_thread)
