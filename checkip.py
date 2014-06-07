@@ -354,8 +354,8 @@ def list_ping():
         g_finish.set()
     except KeyboardInterrupt:
         g_finish.set()
-        for thread in threadlist:
-            thread.join()
+        #for thread in threadlist:
+        #   thread.join()
 
     ip_list.sort()
 
