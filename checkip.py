@@ -108,6 +108,8 @@ class my_ssl_wrap(object):
 
     def getssldomain(self, threadname, ip):
         time_begin = time.time()
+        s = None
+        c = None
         try:
             s = socket.socket()
             #PRINT("[%s]try connect to %s " % (threadname, ip))
@@ -141,12 +143,8 @@ class my_ssl_wrap(object):
                     if subject[0] == "CN":
                         domain = subject[1]
                         PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
-                        c.shutdown()
-                        s.close()
                         return domain, costtime
                 PRINT("[%s]%s can not get CN: %s " % (threadname, ip, cert.get_subject().get_components()))
-                c.shutdown()
-                s.close()
                 return None, costtime
             else:
                 s.settimeout(g_commtimeout)
@@ -174,14 +172,10 @@ class my_ssl_wrap(object):
                                 else:
                                     domain = item[1]
                                 PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
-                                c.shutdown(2)
-                                s.close()
                                 return domain, costtime
                     PRINT("[%s]%s can not get commonName: %s " % (threadname, ip, subjectitems))
                 else:
                     PRINT("[%s]%s can not get subject: %s " % (threadname, ip, cert))
-                c.shutdown(2)
-                s.close()
                 return None, costtime
         except SSLError as e:
             time_end = time.time()
@@ -193,6 +187,20 @@ class my_ssl_wrap(object):
             costtime = int(time_end * 1000 - time_begin * 1000)
             PRINT("[%s]Catch IO Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
             return None, costtime
+        except Exception as e:
+            time_end = time.time()
+            costtime = int(time_end * 1000 - time_begin * 1000)
+            PRINT("[%s]Catch Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
+            return None, costtime
+        finally:
+            if c:
+                if g_useOpenSSL:
+                    c.shutdown()
+                else:
+                    c.shutdown(2)
+            if s:
+                s.shutdown(2)
+                s.close()
 
 
 class Ping(threading.Thread):
