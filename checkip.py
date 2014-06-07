@@ -13,6 +13,7 @@ import socket
 import ssl
 import re
 import select
+import traceback
 
 if sys.version_info[0] == 3:
     from queue import Queue, Empty
@@ -93,13 +94,17 @@ class my_ssl_wrap(object):
     def initsslcxt():
         if my_ssl_wrap.ssl_cxt is not None:
             return
-        my_ssl_wrap.ssl_cxt_lock.acquire()
-        if my_ssl_wrap.ssl_cxt is not None:
-            return
-        my_ssl_wrap.ssl_cxt = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
-        my_ssl_wrap.ssl_cxt.set_timeout(g_commtimeout)
-        PRINT("init ssl context ok")
-        my_ssl_wrap.ssl_cxt_lock.release()
+        try:
+            my_ssl_wrap.ssl_cxt_lock.acquire()
+            if my_ssl_wrap.ssl_cxt is not None:
+                return
+            my_ssl_wrap.ssl_cxt = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
+            my_ssl_wrap.ssl_cxt.set_timeout(g_commtimeout)
+            PRINT("init ssl context ok")
+        except Exception:
+            raise
+        finally:
+            my_ssl_wrap.ssl_cxt_lock.release()
 
     def getssldomain(self, threadname, ip):
         time_begin = time.time()
@@ -122,7 +127,11 @@ class my_ssl_wrap(object):
                         if len(infds) == 0:
                             raise SSLError("do_handshake timeout")
                         else:
-                            pass
+                            costtime = int( time.time() - time_begin)
+                            if costtime > g_commtimeout:
+                                raise SSLError("do_handshake timeout")
+                            else:
+                                pass
                     except OpenSSL.SSL.SysCallError as e:
                         raise SSLError(e.args)
                 cert = c.get_peer_certificate()
@@ -191,7 +200,6 @@ class Ping(threading.Thread):
     ncount_lock = threading.Lock()
     def __init__(self):
         threading.Thread.__init__(self)
-        Ping.ncount += 1
 
     def runJob(self):
         while not g_ready.is_set():
@@ -215,6 +223,9 @@ class Ping(threading.Thread):
             time.sleep(0.0001)
     def run(self):
         try:
+            Ping.ncount_lock.acquire()
+            Ping.ncount += 1
+            Ping.ncount_lock.release()
             self.runJob()
         except Exception:
             raise
@@ -276,6 +287,15 @@ def splitip(strline):
 
     return begin, end
 
+def dumpstacks():
+    code = []
+    for threadId, stack in sys._current_frames().items():
+        code.append("\n# Thread: %d" % (threadId))
+        for filename, lineno, name, line in traceback.extract_stack(stack):
+            code.append('File: "%s", line %d, in %s' % (filename, lineno, name))
+            if line:
+                code.append("  %s" % (line.strip()))
+    sys.stderr.write("\n".join(code))
 
 def list_ping():
     if g_useOpenSSL == 1:
@@ -317,8 +337,20 @@ def list_ping():
         threadlist.append(ping_thread)
     g_ready.set()
     try:
-        while Ping.ncount != 0:
+        time_begin = time.time()
+        lastcount = Ping.ncount
+        while Ping.ncount > 0:
             g_finish.wait(1)
+            time_end = time.time()
+            if lastcount != Ping.ncount or g_queue.qsize() > 0:
+                time_begin = time_end
+                lastcount = Ping.ncount
+            else:
+                if time_end - time_begin > g_commtimeout * 3:
+                    dumpstacks()
+                    break;
+                else:
+                    time_begin = time_end
         g_finish.set()
     except KeyboardInterrupt:
         g_finish.set()
