@@ -14,6 +14,7 @@ import ssl
 import re
 import select
 import traceback
+import logging
 
 if sys.version_info[0] == 3:
     from queue import Queue, Empty
@@ -31,16 +32,26 @@ else:
 import time
 
 g_useOpenSSL = 1
+g_usegevent = 1
 if g_useOpenSSL == 1:
     try:
         import OpenSSL.SSL
 
         SSLError = OpenSSL.SSL.WantReadError
+        g_usegevent = 0
     except ImportError:
         g_useOpenSSL = 0
         SSLError = ssl.SSLError
 else:
     SSLError = ssl.SSLError
+
+if g_usegevent == 1:
+    try:
+        from gevent import monkey
+        monkey.patch_all()
+    except ImportError:
+        g_usegevent = 0
+
 
 """
 ip_str_list为需要查找的IP地址，第一组的格式：
@@ -61,26 +72,29 @@ g_lock = threading.Lock()
 log_lock = threading.Lock()
 
 "连接超时设置"
-g_commtimeout = 7
+g_conntimeout = 5
+g_handshaketimeout = 7
 
 g_filedir = os.path.dirname(__file__)
 g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_ssldomain = ("google.com", "google.pk", "google.co.uk")
 g_maxthreads = 768
-if g_useOpenSSL == 0:
+if g_usegevent == 1:
+    g_maxthreads = 768
+elif g_useOpenSSL == 0:
     g_maxthreads = 256
+# gevent socket cnt must less than 1024
+if g_usegevent == 1 and g_maxthreads > 1000:
+    g_maxthreads = 768
 g_queue = Queue()
 g_finish = threading.Event()
 g_ready = threading.Event()
 
+logging.basicConfig(format="", level=logging.INFO)
 
 def PRINT(strlog):
-    try:
-        log_lock.acquire()
-        print(strlog)
-    finally:
-        log_lock.release()
+    logging.info(strlog)
 
 
 class my_ssl_wrap(object):
@@ -99,7 +113,7 @@ class my_ssl_wrap(object):
             if my_ssl_wrap.ssl_cxt is not None:
                 return
             my_ssl_wrap.ssl_cxt = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
-            my_ssl_wrap.ssl_cxt.set_timeout(g_commtimeout)
+            my_ssl_wrap.ssl_cxt.set_timeout(g_handshaketimeout)
             PRINT("init ssl context ok")
         except Exception:
             raise
@@ -113,25 +127,26 @@ class my_ssl_wrap(object):
         haserror = 1
         try:
             s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             #PRINT("[%s]try connect to %s " % (threadname, ip))
             if g_useOpenSSL:
                 my_ssl_wrap.initsslcxt()
-                s.settimeout(g_commtimeout)
+                s.settimeout(g_conntimeout)
                 s.connect((ip, 443))
                 c = OpenSSL.SSL.Connection(my_ssl_wrap.ssl_cxt, s)
                 c.set_connect_state()
-                c.settimeout(g_commtimeout)
+                s.setblocking(0)
                 while True:
                     try:
                         c.do_handshake()
                         break
                     except SSLError:
-                        infds, outfds, errfds = select.select([s, ], [], [], g_commtimeout)
+                        infds, outfds, errfds = select.select([s, ], [], [], g_handshaketimeout)
                         if len(infds) == 0:
                             raise SSLError("do_handshake timeout")
                         else:
-                            costtime = int( time.time() - time_begin)
-                            if costtime > g_commtimeout:
+                            costtime = int(time.time() - time_begin)
+                            if costtime > g_handshaketimeout:
                                 raise SSLError("do_handshake timeout")
                             else:
                                 pass
@@ -149,10 +164,12 @@ class my_ssl_wrap(object):
                 PRINT("[%s]%s can not get CN: %s " % (threadname, ip, cert.get_subject().get_components()))
                 return None, costtime
             else:
-                s.settimeout(g_commtimeout)
+                s.settimeout(g_conntimeout)
                 c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile,
                                     do_handshake_on_connect=False)
+                c.settimeout(g_conntimeout)
                 c.connect((ip, 443))
+                c.settimeout(g_handshaketimeout)
                 c.do_handshake()
                 cert = c.getpeercert()
                 time_end = time.time()
@@ -216,6 +233,7 @@ class my_ssl_wrap(object):
 class Ping(threading.Thread):
     ncount = 0
     ncount_lock = threading.Lock()
+
     def __init__(self):
         threading.Thread.__init__(self)
 
@@ -239,6 +257,7 @@ class Ping(threading.Thread):
                 break
             "for thread yield"
             time.sleep(0.0001)
+
     def run(self):
         try:
             Ping.ncount_lock.acquire()
@@ -251,6 +270,7 @@ class Ping(threading.Thread):
             Ping.ncount_lock.acquire()
             Ping.ncount -= 1
             Ping.ncount_lock.release()
+
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
@@ -305,6 +325,7 @@ def splitip(strline):
 
     return begin, end
 
+
 def dumpstacks():
     code = []
     for threadId, stack in sys._current_frames().items():
@@ -315,9 +336,12 @@ def dumpstacks():
                 code.append("  %s" % (line.strip()))
     sys.stderr.write("\n".join(code))
 
+
 def list_ping():
     if g_useOpenSSL == 1:
-        PRINT("suport PyOpenSSL")
+        PRINT("support PyOpenSSL")
+    if g_usegevent == 1:
+        PRINT("support gevent")
     threadlist = []
     iprangelist = []
     "split ip,check ip valid and get ip begin to end"
@@ -339,7 +363,7 @@ def list_ping():
                 g_queue.put(nbegin)
                 nbegin += 1
 
-    threading.stack_size(96*1024)
+    threading.stack_size(96 * 1024)
     qsize = g_queue.qsize()
     maxthreads = qsize if qsize < g_maxthreads else g_maxthreads
     PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize))
@@ -364,7 +388,7 @@ def list_ping():
                 time_begin = time_end
                 lastcount = Ping.ncount
             else:
-                if time_end - time_begin > g_commtimeout * 3:
+                if time_end - time_begin > g_handshaketimeout * 3:
                     dumpstacks()
                     break;
                 else:
