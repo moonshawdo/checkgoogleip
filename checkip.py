@@ -110,6 +110,7 @@ class my_ssl_wrap(object):
         time_begin = time.time()
         s = None
         c = None
+        haserror = 1
         try:
             s = socket.socket()
             #PRINT("[%s]try connect to %s " % (threadname, ip))
@@ -143,6 +144,7 @@ class my_ssl_wrap(object):
                     if subject[0] == "CN":
                         domain = subject[1]
                         PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
+                        haserror = 0
                         return domain, costtime
                 PRINT("[%s]%s can not get CN: %s " % (threadname, ip, cert.get_subject().get_components()))
                 return None, costtime
@@ -172,6 +174,7 @@ class my_ssl_wrap(object):
                                 else:
                                     domain = item[1]
                                 PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
+                                haserror = 0
                                 return domain, costtime
                     PRINT("[%s]%s can not get commonName: %s " % (threadname, ip, subjectitems))
                 else:
@@ -193,14 +196,21 @@ class my_ssl_wrap(object):
             PRINT("[%s]Catch Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
             return None, costtime
         finally:
-            if c:
-                if g_useOpenSSL:
-                    c.shutdown()
-                else:
-                    c.shutdown(2)
-            if s:
-                s.shutdown(2)
-                s.close()
+            if g_useOpenSSL:
+                if c:
+                    if haserror == 0:
+                        c.shutdown()
+                        c.sock_shutdown(2)
+                    c.close()
+                if s:
+                    s.close()
+            else:
+                if c:
+                    if haserror == 0:
+                        c.shutdown(2)
+                    c.close()
+                elif s:
+                    s.close()
 
 
 class Ping(threading.Thread):
