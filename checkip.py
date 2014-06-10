@@ -52,6 +52,7 @@ if g_usegevent == 1:
     except ImportError:
         g_usegevent = 0
 
+g_useprocess = 5
 
 """
 ip_str_list为需要查找的IP地址，第一组的格式：
@@ -66,11 +67,6 @@ ip_str_list = '''
 218.253.0.80-218.253.0.90
 '''
 
-ip_list = []
-g_lock = threading.Lock()
-
-log_lock = threading.Lock()
-
 "连接超时设置"
 g_conntimeout = 5
 g_handshaketimeout = 7
@@ -79,22 +75,57 @@ g_filedir = os.path.dirname(__file__)
 g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_ssldomain = ("google.com", "google.pk", "google.co.uk")
-g_maxthreads = 768
+g_maxthreads = 378
 if g_usegevent == 1:
+    g_useprocess = 0
     g_maxthreads = 768
 elif g_useOpenSSL == 0:
     g_maxthreads = 256
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 768
-g_queue = Queue()
-g_finish = threading.Event()
-g_ready = threading.Event()
+    
+if g_useprocess > 0: 
+    from multiprocessing import Process,JoinableQueue as Queue,Event,Lock
+else:
+    from threading import Event,Lock
 
-logging.basicConfig(format="", level=logging.INFO)
+g_finish = Event()
+g_ready = Event()
+
+logging.basicConfig(format="[%(process)d][%(threadName)s]%(message)s",level=logging.INFO)
 
 def PRINT(strlog):
     logging.info(strlog)
+    
+
+class TCacheResult(object):
+    def __init__(self):
+        self.okqueue = Queue()
+        self.failipqueue = Queue()
+    
+    def addOKIP(self,costtime,ip,ssldomain):
+        self.okqueue.put((costtime,ip,ssldomain))
+        
+    def addFailIP(self,ip):
+        self.failipqueue.put(ip)
+        if self.failipqueue.qsize() > 512:
+            self.flushFailIP()        
+       
+    def getIPResult(self):
+        return self._queuetolist(self.okqueue)
+        
+    def _queuetolist(self,myqueue):
+        result = []
+        qsize = myqueue.qsize()
+        while qsize > 0:
+            result.append(myqueue.get())
+            qsize -= 1
+        return result
+    
+    def flushFailIP(self):
+        if self.failipqueue.qsize() > 0 :
+            logging.info(";".join(self._queuetolist(self.failipqueue)) + " timeout")
 
 
 class my_ssl_wrap(object):
@@ -128,7 +159,6 @@ class my_ssl_wrap(object):
         try:
             s = socket.socket()
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            #PRINT("[%s]try connect to %s " % (threadname, ip))
             if g_useOpenSSL:
                 my_ssl_wrap.initsslcxt()
                 s.settimeout(g_conntimeout)
@@ -143,11 +173,11 @@ class my_ssl_wrap(object):
                     except SSLError:
                         infds, outfds, errfds = select.select([s, ], [], [], g_handshaketimeout)
                         if len(infds) == 0:
-                            raise SSLError("do_handshake timeout")
+                            raise SSLError("do_handshake timed out")
                         else:
                             costtime = int(time.time() - time_begin)
                             if costtime > g_handshaketimeout:
-                                raise SSLError("do_handshake timeout")
+                                raise SSLError("do_handshake timed out")
                             else:
                                 pass
                     except OpenSSL.SSL.SysCallError as e:
@@ -158,10 +188,10 @@ class my_ssl_wrap(object):
                 for subject in cert.get_subject().get_components():
                     if subject[0] == "CN":
                         domain = subject[1]
-                        PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
+                        PRINT("ip: %s,CN: %s " % (ip, domain))
                         haserror = 0
                         return domain, costtime
-                PRINT("[%s]%s can not get CN: %s " % (threadname, ip, cert.get_subject().get_components()))
+                PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
                 return None, costtime
             else:
                 s.settimeout(g_conntimeout)
@@ -190,27 +220,29 @@ class my_ssl_wrap(object):
                                     domain = item[1].encode("utf-8")
                                 else:
                                     domain = item[1]
-                                PRINT("[%s]ip: %s,CN: %s " % (threadname, ip, domain))
+                                PRINT("ip: %s,CN: %s " % (ip, domain))
                                 haserror = 0
                                 return domain, costtime
-                    PRINT("[%s]%s can not get commonName: %s " % (threadname, ip, subjectitems))
+                    PRINT("%s can not get commonName: %s " % (ip, subjectitems))
                 else:
-                    PRINT("[%s]%s can not get subject: %s " % (threadname, ip, cert))
+                    PRINT("%s can not get subject: %s " % (ip, cert))
                 return None, costtime
         except SSLError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
-            PRINT("[%s]SSL Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
+            if "timed out"  not in str(e):
+                PRINT("SSL Exception(%s): %s, times:%d ms " % (ip, e, costtime))
             return None, costtime
         except IOError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
-            PRINT("[%s]Catch IO Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
+            if "timed out"  not in str(e):
+                PRINT("Catch IO Exception(%s): %s, times:%d ms " % (ip, e, costtime))
             return None, costtime
         except Exception as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
-            PRINT("[%s]Catch Exception(%s): %s, times:%d ms " % (threadname, ip, e, costtime))
+            PRINT("Catch Exception(%s): %s, times:%d ms " % (ip, e, costtime))
             return None, costtime
         finally:
             if g_useOpenSSL:
@@ -234,29 +266,27 @@ class Ping(threading.Thread):
     ncount = 0
     ncount_lock = threading.Lock()
 
-    def __init__(self):
+    def __init__(self,checkqueue,cacheResult):
         threading.Thread.__init__(self)
+        self.queue = checkqueue
+        self.cacheResult = cacheResult
 
     def runJob(self):
         while not g_ready.is_set():
             g_ready.wait(5)
-        while not g_finish.is_set() and g_queue.qsize() > 0:
+        while not g_finish.is_set() and self.queue.qsize() > 0:
             try:
-                addrint = g_queue.get_nowait()
+                addrint = self.queue.get_nowait()
                 ipaddr = to_string(addrint)
-                g_queue.task_done()
+                self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
                 (ssldomain, costtime) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None and ssldomain.lower() in g_ssldomain:
-                    try:
-                        g_lock.acquire()
-                        ip_list.append((costtime, ipaddr, ssldomain))
-                    finally:
-                        g_lock.release()
+                    self.cacheResult.addOKIP(costtime, ipaddr, ssldomain)
+                elif ssldomain is None:
+                    self.cacheResult.addFailIP(ipaddr)
             except Empty:
                 break
-            "for thread yield"
-            time.sleep(0.0001)
 
     def run(self):
         try:
@@ -335,6 +365,75 @@ def dumpstacks():
             if line:
                 code.append("  %s" % (line.strip()))
     sys.stderr.write("\n".join(code))
+    
+def checksingleprocess(ipqueue,cacheResult,max_threads):
+    threadlist = []
+    threading.stack_size(96 * 1024)
+    qsize = ipqueue.qsize()
+    maxthreads = qsize if qsize < max_threads else max_threads
+    PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize))
+    for i in xrange(1, maxthreads + 1):
+        ping_thread = Ping(ipqueue,cacheResult)
+        ping_thread.setDaemon(True)
+        try:
+            ping_thread.start()
+        except threading.ThreadError as e:
+            PRINT('start new thread except: %s,work thread cnt: %d' % (e, Ping.ncount))
+            "can not create new thread"
+            break
+        threadlist.append(ping_thread)
+    g_ready.set()
+    try:
+        time_begin = time.time()
+        lastcount = Ping.ncount
+        while Ping.ncount > 0:
+            g_finish.wait(1)
+            time_end = time.time()
+            if lastcount != Ping.ncount or ipqueue.qsize() > 0:
+                time_begin = time_end
+                lastcount = Ping.ncount
+            else:
+                if time_end - time_begin > g_handshaketimeout * 3:
+                    dumpstacks()
+                    break;
+                else:
+                    time_begin = time_end
+        g_finish.set()
+    except KeyboardInterrupt:
+        g_finish.set()
+        #for thread in threadlist:
+        #   thread.join()
+        
+def callsingleprocess(ipqueue,cacheResult,max_threads):
+    PRINT("Start Process")
+    checksingleprocess(ipqueue, cacheResult,max_threads)
+    PRINT("End Process")
+    
+    
+def checkmultiprocess(ipqueue,cacheResult):
+    if ipqueue.qsize() == 0:
+        return
+    processlist = []
+    "如果ip数小于512，只使用一个子进程，否则则使用指定进程数，每个进程处理平均值的数量ip"
+    max_threads = g_maxthreads
+    maxprocess = g_useprocess
+    if ipqueue.qsize() < g_maxthreads:
+        max_threads = ipqueue.qsize()
+        maxprocess = 1
+    else:
+        max_threads = (ipqueue.qsize() + g_useprocess) / g_useprocess
+    for i in xrange(0,maxprocess):
+        p = Process(target=callsingleprocess,args=(ipqueue,cacheResult,max_threads))
+        processlist.append(p)
+        p.start()
+    
+    try:
+        for p in processlist:
+            p.join()
+    except KeyboardInterrupt:
+        for p in processlist:
+            if p.is_alive():
+                p.terminate()  
 
 
 def list_ping():
@@ -342,8 +441,10 @@ def list_ping():
         PRINT("support PyOpenSSL")
     if g_usegevent == 1:
         PRINT("support gevent")
-    threadlist = []
+
     iprangelist = []
+    checkqueue = Queue()
+    cacheResult = TCacheResult()
     "split ip,check ip valid and get ip begin to end"
     iplineslist = re.split("\r|\n", ip_str_list)
     for iplines in iplineslist:
@@ -360,45 +461,16 @@ def list_ping():
             nbegin = from_string(begin)
             nend = from_string(end)
             while nbegin <= nend:
-                g_queue.put(nbegin)
+                checkqueue.put(nbegin)
                 nbegin += 1
 
-    threading.stack_size(96 * 1024)
-    qsize = g_queue.qsize()
-    maxthreads = qsize if qsize < g_maxthreads else g_maxthreads
-    PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize))
-    for i in xrange(1, maxthreads + 1):
-        ping_thread = Ping()
-        ping_thread.setDaemon(True)
-        try:
-            ping_thread.start()
-        except threading.ThreadError as e:
-            PRINT('start new thread except: %s,work thread cnt: %d' % (e, Ping.ncount))
-            "can not create new thread"
-            break
-        threadlist.append(ping_thread)
-    g_ready.set()
-    try:
-        time_begin = time.time()
-        lastcount = Ping.ncount
-        while Ping.ncount > 0:
-            g_finish.wait(1)
-            time_end = time.time()
-            if lastcount != Ping.ncount or g_queue.qsize() > 0:
-                time_begin = time_end
-                lastcount = Ping.ncount
-            else:
-                if time_end - time_begin > g_handshaketimeout * 3:
-                    dumpstacks()
-                    break;
-                else:
-                    time_begin = time_end
-        g_finish.set()
-    except KeyboardInterrupt:
-        g_finish.set()
-        #for thread in threadlist:
-        #   thread.join()
-
+    if g_useprocess == 0:
+        checksingleprocess(checkqueue,cacheResult,g_maxthreads)
+    else:
+        checkmultiprocess(checkqueue,cacheResult)
+    
+    cacheResult.flushFailIP()
+    ip_list = cacheResult.getIPResult()
     ip_list.sort()
 
     PRINT('try to collect ssl result')
