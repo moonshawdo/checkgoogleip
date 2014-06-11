@@ -31,7 +31,7 @@ else:
     from Queue import Queue, Empty
 import time
 
-g_useOpenSSL = 1
+g_useOpenSSL = 0
 g_usegevent = 1
 if g_useOpenSSL == 1:
     try:
