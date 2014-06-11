@@ -74,9 +74,12 @@ g_handshaketimeout = 7
 g_filedir = os.path.dirname(__file__)
 g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
+g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
+g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 g_ssldomain = ("google.com", "google.pk", "google.co.uk")
 g_maxthreads = 378
 if g_usegevent == 1:
+    "must set g_useprocess = 0"
     g_useprocess = 0
     g_maxthreads = 768
 elif g_useOpenSSL == 0:
@@ -85,13 +88,16 @@ elif g_useOpenSSL == 0:
 if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 768
     
-if g_useprocess > 0: 
-    from multiprocessing import Process,JoinableQueue as Queue,Event,Lock
-else:
-    from threading import Event,Lock
+if g_useprocess > 1: 
+    import multiprocessing
+    from multiprocessing import Process,JoinableQueue as Queue
 
-g_finish = Event()
-g_ready = Event()
+"是否自动删除记录查询成功的IP文件，0为不删除，1为删除"
+"文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名"
+g_autodeltmpokfile = 0
+"是否自动删除记录查询失败的IP文件，0为不删除，1为删除"
+"ip_tmperror.txt，格式：ip"
+g_autodeltmperrorfile = 0
 
 logging.basicConfig(format="[%(process)d][%(threadName)s]%(message)s",level=logging.INFO)
 
@@ -103,14 +109,46 @@ class TCacheResult(object):
     def __init__(self):
         self.okqueue = Queue()
         self.failipqueue = Queue()
+        if g_useprocess > 1:
+            self.oklock = multiprocessing.Lock()
+            self.errlock = multiprocessing.Lock()
+        else:
+            self.oklock = threading.Lock()
+            self.errlock = threading.Lock()
+        self.okfile = None
+        self.errorfile = None
     
     def addOKIP(self,costtime,ip,ssldomain):
-        self.okqueue.put((costtime,ip,ssldomain))
-        
+        if ssldomain.lower() in g_ssldomain:
+            self.okqueue.put((costtime,ip,ssldomain))
+        try:
+            self.oklock.acquire()
+            if self.okfile is None:
+                self.okfile = open(g_tmpokfile,"a+")
+            line = "%s %d %s\n" % (ip, costtime, ssldomain)
+            self.okfile.write(line)
+        finally:
+            self.oklock.release()
+            
     def addFailIP(self,ip):
         self.failipqueue.put(ip)
         if self.failipqueue.qsize() > 512:
-            self.flushFailIP()        
+            self.flushFailIP()
+        try:
+            self.errlock.acquire()
+            if self.errorfile is None:
+                self.errorfile = open(g_tmperrorfile,"a+")
+            self.errorfile.write(ip+"\n")
+        finally:
+            self.errlock.release() 
+    
+    def close(self):
+        if self.okfile:
+            self.okfile.close()
+            self.okfile = None
+        if self.errorfile:
+            self.errorfile.close()
+            self.errorfile = None
        
     def getIPResult(self):
         return self._queuetolist(self.okqueue)
@@ -126,7 +164,33 @@ class TCacheResult(object):
     def flushFailIP(self):
         if self.failipqueue.qsize() > 0 :
             logging.info(";".join(self._queuetolist(self.failipqueue)) + " timeout")
-
+            
+    def loadLastResult(self):
+        okresult  = set()
+        errorresult = set()
+        if os.path.exists(g_tmpokfile):
+            with open(g_tmpokfile,"r") as fd:
+                for line in fd:
+                    ips = line.strip("\r\n").split(" ")
+                    okresult.add(ips[0])
+                    if ips[2].lower() in g_ssldomain:
+                        self.okqueue.put((int(ips[1]),ips[0],ips[2]))
+        if os.path.exists(g_tmperrorfile):
+            with open(g_tmperrorfile,"r") as fd:
+                for line in fd:
+                    ips = line.strip("\r\n").split(" ")
+                    for item in ips:
+                        errorresult.add(item)
+        return okresult,errorresult
+    
+    def clearFile(self):
+        self.close()
+        if g_autodeltmpokfile and os.path.exists(g_tmpokfile):
+            os.remove(g_tmpokfile)
+            PRINT("remove file %s" % g_tmpokfile)
+        if g_autodeltmperrorfile and os.path.exists(g_tmperrorfile):
+            os.remove(g_tmperrorfile)
+            PRINT("remove file %s" % g_tmperrorfile)
 
 class my_ssl_wrap(object):
     ssl_cxt = None
@@ -266,22 +330,24 @@ class Ping(threading.Thread):
     ncount = 0
     ncount_lock = threading.Lock()
 
-    def __init__(self,checkqueue,cacheResult):
+    def __init__(self,checkqueue,cacheResult,evt_finish,evt_ready):
         threading.Thread.__init__(self)
         self.queue = checkqueue
         self.cacheResult = cacheResult
+        self.evt_finish = evt_finish
+        self.evt_ready = evt_ready
 
     def runJob(self):
-        while not g_ready.is_set():
-            g_ready.wait(5)
-        while not g_finish.is_set() and self.queue.qsize() > 0:
+        while not self.evt_ready.is_set():
+            self.evt_ready.wait(5)
+        while not self.evt_finish.is_set() and self.queue.qsize() > 0:
             try:
                 addrint = self.queue.get_nowait()
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
                 (ssldomain, costtime) = ssl_obj.getssldomain(self.getName(), ipaddr)
-                if ssldomain is not None and ssldomain.lower() in g_ssldomain:
+                if ssldomain is not None:
                     self.cacheResult.addOKIP(costtime, ipaddr, ssldomain)
                 elif ssldomain is None:
                     self.cacheResult.addFailIP(ipaddr)
@@ -369,11 +435,13 @@ def dumpstacks():
 def checksingleprocess(ipqueue,cacheResult,max_threads):
     threadlist = []
     threading.stack_size(96 * 1024)
+    evt_finish = threading.Event()
+    evt_ready = threading.Event()    
     qsize = ipqueue.qsize()
     maxthreads = qsize if qsize < max_threads else max_threads
     PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize))
     for i in xrange(1, maxthreads + 1):
-        ping_thread = Ping(ipqueue,cacheResult)
+        ping_thread = Ping(ipqueue,cacheResult,evt_finish,evt_ready)
         ping_thread.setDaemon(True)
         try:
             ping_thread.start()
@@ -382,12 +450,12 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
             "can not create new thread"
             break
         threadlist.append(ping_thread)
-    g_ready.set()
+    evt_ready.set()
     try:
         time_begin = time.time()
         lastcount = Ping.ncount
         while Ping.ncount > 0:
-            g_finish.wait(1)
+            evt_finish.wait(1)
             time_end = time.time()
             if lastcount != Ping.ncount or ipqueue.qsize() > 0:
                 time_begin = time_end
@@ -398,11 +466,12 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
                     break;
                 else:
                     time_begin = time_end
-        g_finish.set()
+        evt_finish.set()
     except KeyboardInterrupt:
-        g_finish.set()
+        evt_finish.set()
         #for thread in threadlist:
         #   thread.join()
+    cacheResult.close()
         
 def callsingleprocess(ipqueue,cacheResult,max_threads):
     PRINT("Start Process")
@@ -422,6 +491,8 @@ def checkmultiprocess(ipqueue,cacheResult):
         maxprocess = 1
     else:
         max_threads = (ipqueue.qsize() + g_useprocess) / g_useprocess
+        if max_threads > g_maxthreads:
+            max_threads = g_maxthreads
     for i in xrange(0,maxprocess):
         p = Process(target=callsingleprocess,args=(ipqueue,cacheResult,max_threads))
         processlist.append(p)
@@ -445,6 +516,12 @@ def list_ping():
     iprangelist = []
     checkqueue = Queue()
     cacheResult = TCacheResult()
+    lastokresult,lasterrorresult = cacheResult.loadLastResult()
+    oklen = len(lastokresult)
+    errorlen = len(lasterrorresult)
+    totalcachelen = oklen + errorlen
+    if totalcachelen != 0:
+        PRINT("load last result,ok cnt:%d,error cnt: %d" % (oklen,errorlen) )
     "split ip,check ip valid and get ip begin to end"
     iplineslist = re.split("\r|\n", ip_str_list)
     for iplines in iplineslist:
@@ -461,13 +538,23 @@ def list_ping():
             nbegin = from_string(begin)
             nend = from_string(end)
             while nbegin <= nend:
-                checkqueue.put(nbegin)
+                if totalcachelen != 0:
+                    ip = to_string(nbegin)
+                    if ip in lastokresult:
+                        PRINT("ip:%s had check ok last" % ip)
+                    elif ip in lasterrorresult:
+                        PRINT("ip:%s had check error last" % ip)
+                    else:
+                        checkqueue.put(nbegin)
+                else:
+                    checkqueue.put(nbegin)
                 nbegin += 1
 
-    if g_useprocess == 0:
-        checksingleprocess(checkqueue,cacheResult,g_maxthreads)
-    else:
-        checkmultiprocess(checkqueue,cacheResult)
+    if checkqueue.qsize() > 0:
+        if g_useprocess > 1:
+            checkmultiprocess(checkqueue,cacheResult)
+        else:
+            checksingleprocess(checkqueue,cacheResult,g_maxthreads)
     
     cacheResult.flushFailIP()
     ip_list = cacheResult.getIPResult()
@@ -488,6 +575,7 @@ def list_ping():
             ncount += 1
     PRINT("write to file %s ok,count:%d " % (g_ipfile, ncount))
     ff.close()
+    cacheResult.clearFile()
 
 
 if __name__ == '__main__':
