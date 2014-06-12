@@ -31,7 +31,7 @@ else:
     from Queue import Queue, Empty
 import time
 
-g_useOpenSSL = 0
+g_useOpenSSL = 1
 g_usegevent = 1
 if g_useOpenSSL == 1:
     try:
@@ -77,11 +77,11 @@ g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 g_ssldomain = ("google.com", "google.pk", "google.co.uk")
-g_maxthreads = 378
+g_maxthreads = 256
 if g_usegevent == 1:
     "must set g_useprocess = 0"
     g_useprocess = 0
-    g_maxthreads = 768
+    g_maxthreads = 512
 elif g_useOpenSSL == 0:
     g_maxthreads = 256
 # gevent socket cnt must less than 1024
@@ -125,6 +125,7 @@ class TCacheResult(object):
             self.oklock.acquire()
             if self.okfile is None:
                 self.okfile = open(g_tmpokfile,"a+")
+            self.okfile.seek(0,2)
             line = "%s %d %s\n" % (ip, costtime, ssldomain)
             self.okfile.write(line)
         finally:
@@ -138,6 +139,7 @@ class TCacheResult(object):
             self.errlock.acquire()
             if self.errorfile is None:
                 self.errorfile = open(g_tmperrorfile,"a+")
+            self.errorfile.seek(0,2)
             self.errorfile.write(ip+"\n")
         finally:
             self.errlock.release() 
@@ -430,7 +432,7 @@ def dumpstacks():
             code.append('File: "%s", line %d, in %s' % (filename, lineno, name))
             if line:
                 code.append("  %s" % (line.strip()))
-    sys.stderr.write("\n".join(code))
+    PRINT("\n".join(code))
     
 def checksingleprocess(ipqueue,cacheResult,max_threads):
     threadlist = []
@@ -455,7 +457,7 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
         time_begin = time.time()
         lastcount = Ping.ncount
         while Ping.ncount > 0:
-            evt_finish.wait(1)
+            evt_finish.wait(2)
             time_end = time.time()
             if lastcount != Ping.ncount or ipqueue.qsize() > 0:
                 time_begin = time_end
@@ -468,9 +470,10 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
                     time_begin = time_end
         evt_finish.set()
     except KeyboardInterrupt:
+        PRINT("need wait all thread end...")
         evt_finish.set()
-        #for thread in threadlist:
-        #   thread.join()
+    for p in threadlist:
+        p.join()
     cacheResult.close()
         
 def callsingleprocess(ipqueue,cacheResult,max_threads):
@@ -502,6 +505,7 @@ def checkmultiprocess(ipqueue,cacheResult):
         for p in processlist:
             p.join()
     except KeyboardInterrupt:
+        PRINT("need wait all process end...")
         for p in processlist:
             if p.is_alive():
                 p.terminate()  
@@ -512,6 +516,8 @@ def list_ping():
         PRINT("support PyOpenSSL")
     if g_usegevent == 1:
         PRINT("support gevent")
+    if g_useprocess > 1:
+        PRINT("support multiprocess")
 
     iprangelist = []
     checkqueue = Queue()
@@ -551,7 +557,7 @@ def list_ping():
                 nbegin += 1
 
     if checkqueue.qsize() > 0:
-        if g_useprocess > 1:
+        if g_useprocess > 1 and checkqueue.qsize() > g_maxthreads:
             checkmultiprocess(checkqueue,cacheResult)
         else:
             checksingleprocess(checkqueue,cacheResult,g_maxthreads)
