@@ -76,7 +76,13 @@ g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
+
 g_ssldomain = ("google.com", "google.pk", "google.co.uk","*.google.com")
+g_excludessdomain=()
+g_excludessdomainlen = len(g_excludessdomain)
+# g_ssldomainrange里面的元素是模糊匹配，只支持"?",表示任意一个字母
+g_ssldomainrange=("*.google.??","*.google.com.??")
+
 
 g_maxthreads = 256
 if g_usegevent == 1:
@@ -116,6 +122,28 @@ def PRINT(strlog):
     logging.info(strlog)
     
 
+def checkvalidssldomain(domain):
+    lowerdomain = domain.lower()
+    if lowerdomain in g_ssldomain:
+        return True
+    elif g_excludessdomainlen != 0 and lowerdomain in g_excludessdomain:
+        return False
+    else:
+        for item in g_ssldomainrange:
+            itemlen = len(item)
+            domainlen = len(lowerdomain)
+            if itemlen != domainlen:
+                continue
+            i = 0
+            while i < itemlen:
+                if item[i] == '?':
+                    pass
+                elif domain[i] != item[i]:
+                    return False
+                i += 1
+            return True
+    return False
+
 class TCacheResult(object):
     def __init__(self):
         self.okqueue = Queue()
@@ -130,7 +158,7 @@ class TCacheResult(object):
         self.errorfile = None
     
     def addOKIP(self,costtime,ip,ssldomain):
-        if ssldomain.lower() in g_ssldomain:
+        if checkvalidssldomain(ssldomain):
             self.okqueue.put((costtime,ip,ssldomain))
         try:
             self.oklock.acquire()
@@ -172,14 +200,23 @@ class TCacheResult(object):
             qsize = myqueue.qsize()
             while qsize > 0:
                 result.append(myqueue.get_nowait())
+                myqueue.task_done()
                 qsize -= 1
         except Empty:
             pass
         return result
     
-    def flushFailIP(self):
+    def _flushFailIP(self):
         if self.failipqueue.qsize() > 0 :
             logging.info(";".join(self._queuetolist(self.failipqueue)) + " timeout")
+            
+    def flushFailIP(self):
+        try:
+            self.errlock.acquire()        
+            if self.failipqueue.qsize() > 0 :
+                logging.info(";".join(self._queuetolist(self.failipqueue)) + " timeout")
+        finally:
+            self.errlock.release()         
             
     def loadLastResult(self):
         okresult  = set()
@@ -191,7 +228,7 @@ class TCacheResult(object):
                     if len(ips) < 3:
                         continue
                     okresult.add(ips[0])
-                    if ips[2].lower() in g_ssldomain:
+                    if checkvalidssldomain(ips[2]):
                         self.okqueue.put((int(ips[1]),ips[0],ips[2]))
         if os.path.exists(g_tmperrorfile):
             with open(g_tmperrorfile,"r") as fd:
@@ -506,12 +543,17 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
     for p in threadlist:
         p.join()
     cacheResult.close()
+    
+def goodbye():
+    PRINT("[%d]say goodbye" % os.getpid())
         
 def callsingleprocess(ipqueue,cacheResult,max_threads):
     PRINT("Start Process")
+    import atexit
+    atexit.register(goodbye)
     checksingleprocess(ipqueue, cacheResult,max_threads)
+    cacheResult.flushFailIP()
     PRINT("End Process")
-    
     
 def checkmultiprocess(ipqueue,cacheResult):
     if ipqueue.qsize() == 0:
@@ -527,8 +569,10 @@ def checkmultiprocess(ipqueue,cacheResult):
         max_threads = (ipqueue.qsize() + g_useprocess) / g_useprocess
         if max_threads > g_maxthreads:
             max_threads = g_maxthreads
+    #multiprocessing.log_to_stderr(logging.DEBUG)
     for i in xrange(0,maxprocess):
         p = Process(target=callsingleprocess,args=(ipqueue,cacheResult,max_threads))
+        p.daemon = True
         processlist.append(p)
         p.start()
     
