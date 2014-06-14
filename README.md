@@ -25,12 +25,13 @@ checkgoogleip
 * 默认会尝试使用pyOpenSSL库与多进程，好处：明显优化cpu及内存使用，最大线程数量限制了256条，在测试中设置768也可以正常运行，程序在启动时cpu较高，几秒后会降下来，如果不支持pyOpenSSL库，则使用内置的ssl库，最大线程数量限制在256条，在测试中，发现超过378条的话，会导致部分线程加载证书失败
 * 当使用gevent时，会禁用多进程处理，因为暂时没找到会线程挂住的原因
 * 脚本默认只提供一组IP来测试，如果想查找更多的IP，请自行添加到脚本中
+* 默认会保存测试IP的结果到ip_tmperror.txt（失败）与ip_tmpok.txt（成功），下次运行脚本时会预先读取，并会跳过这些IP的查询，如果不想保留ip_tmperror.txt，则g_autodeltmperrorfile为1，如果不想保留ip_tmpok.txt，则需要设置g_autodeltmpokfile=0，如果程序正常运行结束，则会检查g_autodeltmperrorfile及g_autodeltmpokfile，并执行对应的操作，如果程序运行异常，需要关闭程序，则会保留这两个文件
 
 使用方法
 -------------
 ### windows
   可以放在把checkip.py与checkip.bat放在goagent/local目录下面，由于cacert.pem是取自goagent/local目录里面的同名文件，因此不需要复制cacert.pem到该目录，然后执行checkip.bat  
-  如果执行成功，会在该目录新建一个ip.txt文件，里面的IP列表就是可用列表
+  如果执行成功，会在该目录新建一个ip.txt文件，里面的IP列表就是可用列表,ip_tmperror.txt会保留查询失败的IP，ip_tmpok.txt会保留查询成功的IP
 
 ### linux
   把checkip.py与cacert.pem放在同一个目录，然后执行
