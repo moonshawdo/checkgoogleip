@@ -78,6 +78,12 @@ g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 g_ssldomain = ("google.com", "google.pk", "google.co.uk","*.google.com")
 
+g_maxthreads = 256
+if g_usegevent == 1:
+    "must set g_useprocess = 0"
+    g_useprocess = 0
+    g_maxthreads = 512
+
 if g_useprocess > 1:
     try:
         import multiprocessing
@@ -85,15 +91,13 @@ if g_useprocess > 1:
     except ImportError:
         g_useprocess = 0
 
-g_maxthreads = 256
-if g_useOpenSSL and g_useprocess == 0:
-    g_maxthreads = 512
 if g_usegevent == 1:
-    "must set g_useprocess = 0"
-    g_useprocess = 0
+    pass
+elif g_useOpenSSL and g_useprocess == 0:
     g_maxthreads = 512
 elif g_useOpenSSL == 0:
     g_maxthreads = 256
+
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 768
