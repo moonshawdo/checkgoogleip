@@ -76,7 +76,7 @@ g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
-g_ssldomain = ("google.com", "google.pk", "google.co.uk")
+g_ssldomain = ("google.com", "google.pk", "google.co.uk","*.google.com")
 g_maxthreads = 256
 if g_usegevent == 1:
     "must set g_useprocess = 0"
@@ -124,7 +124,7 @@ class TCacheResult(object):
         try:
             self.oklock.acquire()
             if self.okfile is None:
-                self.okfile = open(g_tmpokfile,"a+")
+                self.okfile = open(g_tmpokfile,"a+",0)
             self.okfile.seek(0,2)
             line = "%s %d %s\n" % (ip, costtime, ssldomain)
             self.okfile.write(line)
@@ -138,7 +138,7 @@ class TCacheResult(object):
         try:
             self.errlock.acquire()
             if self.errorfile is None:
-                self.errorfile = open(g_tmperrorfile,"a+")
+                self.errorfile = open(g_tmperrorfile,"a+",0)
             self.errorfile.seek(0,2)
             self.errorfile.write(ip+"\n")
         finally:
@@ -344,7 +344,7 @@ class Ping(threading.Thread):
             self.evt_ready.wait(5)
         while not self.evt_finish.is_set() and self.queue.qsize() > 0:
             try:
-                addrint = self.queue.get_nowait()
+                addrint = self.queue.get(True,5)
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
@@ -368,7 +368,14 @@ class Ping(threading.Thread):
             Ping.ncount_lock.acquire()
             Ping.ncount -= 1
             Ping.ncount_lock.release()
-
+    
+    @staticmethod 
+    def getCount():
+        try:
+           Ping.ncount_lock.acquire()
+           return Ping.ncount
+        finally:
+           Ping.ncount_lock.release()
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
@@ -448,26 +455,34 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
         try:
             ping_thread.start()
         except threading.ThreadError as e:
-            PRINT('start new thread except: %s,work thread cnt: %d' % (e, Ping.ncount))
+            PRINT('start new thread except: %s,work thread cnt: %d' % (e, Ping.getCount()))
             "can not create new thread"
             break
         threadlist.append(ping_thread)
     evt_ready.set()
     try:
         time_begin = time.time()
-        lastcount = Ping.ncount
-        while Ping.ncount > 0:
+        logtime = time_begin
+        count = Ping.getCount()
+        lastcount = count
+        while count > 0:
             evt_finish.wait(2)
             time_end = time.time()
-            if lastcount != Ping.ncount or ipqueue.qsize() > 0:
+            queuesize = ipqueue.qsize()
+            count = Ping.getCount()
+            if lastcount != count or queuesize > 0:
                 time_begin = time_end
-                lastcount = Ping.ncount
+                lastcount = count
             else:
                 if time_end - time_begin > g_handshaketimeout * 3:
                     dumpstacks()
                     break;
                 else:
                     time_begin = time_end
+            if time_end - logtime > 60:
+                PRINT("has thread count:%d,ip total cnt:%d" % (Ping.getCount(),queuesize))
+                logtime = time_end
+            count = Ping.getCount()
         evt_finish.set()
     except KeyboardInterrupt:
         PRINT("need wait all thread end...")
