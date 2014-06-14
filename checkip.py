@@ -77,7 +77,17 @@ g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 g_ssldomain = ("google.com", "google.pk", "google.co.uk","*.google.com")
+
+if g_useprocess > 1:
+    try:
+        import multiprocessing
+        from multiprocessing import Process,JoinableQueue as Queue
+    except ImportError:
+        g_useprocess = 0
+
 g_maxthreads = 256
+if g_useOpenSSL and g_useprocess == 0:
+    g_maxthreads = 512
 if g_usegevent == 1:
     "must set g_useprocess = 0"
     g_useprocess = 0
@@ -87,10 +97,7 @@ elif g_useOpenSSL == 0:
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 768
-    
-if g_useprocess > 1: 
-    import multiprocessing
-    from multiprocessing import Process,JoinableQueue as Queue
+
 
 "是否自动删除记录查询成功的IP文件，0为不删除，1为删除"
 "文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名"
@@ -132,15 +139,15 @@ class TCacheResult(object):
             self.oklock.release()
             
     def addFailIP(self,ip):
-        self.failipqueue.put(ip)
-        if self.failipqueue.qsize() > 512:
-            self.flushFailIP()
         try:
             self.errlock.acquire()
             if self.errorfile is None:
                 self.errorfile = open(g_tmperrorfile,"a+",0)
             self.errorfile.seek(0,2)
             self.errorfile.write(ip+"\n")
+            self.failipqueue.put(ip)
+            if self.failipqueue.qsize() > 512:
+                self.flushFailIP()
         finally:
             self.errlock.release() 
     
@@ -157,10 +164,13 @@ class TCacheResult(object):
         
     def _queuetolist(self,myqueue):
         result = []
-        qsize = myqueue.qsize()
-        while qsize > 0:
-            result.append(myqueue.get())
-            qsize -= 1
+        try:
+            qsize = myqueue.qsize()
+            while qsize > 0:
+                result.append(myqueue.get_nowait())
+                qsize -= 1
+        except Empty:
+            pass
         return result
     
     def flushFailIP(self):
@@ -174,6 +184,8 @@ class TCacheResult(object):
             with open(g_tmpokfile,"r") as fd:
                 for line in fd:
                     ips = line.strip("\r\n").split(" ")
+                    if len(ips) < 3:
+                        continue
                     okresult.add(ips[0])
                     if ips[2].lower() in g_ssldomain:
                         self.okqueue.put((int(ips[1]),ips[0],ips[2]))
@@ -545,6 +557,8 @@ def list_ping():
         PRINT("load last result,ok cnt:%d,error cnt: %d" % (oklen,errorlen) )
     "split ip,check ip valid and get ip begin to end"
     iplineslist = re.split("\r|\n", ip_str_list)
+    skipokcnt = 0
+    skiperrocnt = 0
     for iplines in iplineslist:
         if len(iplines) == 0 or iplines[0] == '#':
             continue
@@ -562,14 +576,19 @@ def list_ping():
                 if totalcachelen != 0:
                     ip = to_string(nbegin)
                     if ip in lastokresult:
-                        PRINT("ip:%s had check ok last" % ip)
+                        #PRINT("ip:%s had check ok last" % ip)
+                        skipokcnt += 1
                     elif ip in lasterrorresult:
-                        PRINT("ip:%s had check error last" % ip)
+                        #PRINT("ip:%s had check error last" % ip)
+                        skiperrocnt += 1
                     else:
                         checkqueue.put(nbegin)
                 else:
                     checkqueue.put(nbegin)
                 nbegin += 1
+    
+    if skipokcnt != 0 or skiperrocnt != 0:
+        PRINT("skip ok cnt:%d,skip error cnt: %d" % (skipokcnt,skiperrocnt) )
 
     if checkqueue.qsize() > 0:
         if g_useprocess > 1 and checkqueue.qsize() > g_maxthreads:
