@@ -77,13 +77,6 @@ g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 
-g_ssldomain = ("google.com", "google.pk", "google.co.uk","*.google.com")
-g_excludessdomain=()
-g_excludessdomainlen = len(g_excludessdomain)
-# g_ssldomainrange里面的元素是模糊匹配，只支持"?",表示任意一个字母
-g_ssldomainrange=("*.google.??","*.google.com.??")
-
-
 g_maxthreads = 256
 if g_usegevent == 1:
     "must set g_useprocess = 0"
@@ -109,6 +102,20 @@ if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 768
 
 
+g_ssldomain = ("google.com", "google.pk", "google.co.uk","*.google.com")
+g_supportwidecheck = 1
+if sys.platform == "win32":
+    "在win平台，开启多进程时，判断item[i] != '?' 后，会导致子进程不能退出，因此win平台使用多进程时不支持模糊匹配"
+    if g_useprocess > 0:
+        g_supportwidecheck = 0
+
+if g_supportwidecheck == 1:
+    g_excludessdomain=()
+    g_excludessdomainlen = len(g_excludessdomain)
+    # g_ssldomainrange里面的元素是模糊匹配，只支持"?",表示任意一个字母
+    g_ssldomainrange=("*.google.com.??",)
+
+
 "是否自动删除记录查询成功的IP文件，0为不删除，1为删除"
 "文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名"
 g_autodeltmpokfile = 0
@@ -126,7 +133,10 @@ def checkvalidssldomain(domain):
     lowerdomain = domain.lower()
     if lowerdomain in g_ssldomain:
         return True
-    elif g_excludessdomainlen != 0 and lowerdomain in g_excludessdomain:
+    if g_supportwidecheck == 0:
+        return False
+    
+    if g_excludessdomainlen != 0 and lowerdomain in g_excludessdomain:
         return False
     else:
         for item in g_ssldomainrange:
@@ -136,9 +146,7 @@ def checkvalidssldomain(domain):
                 continue
             i = 0
             while i < itemlen:
-                if item[i] == '?':
-                    pass
-                elif domain[i] != item[i]:
+                if item[i] != '?' and domain[i] != item[i]:
                     return False
                 i += 1
             return True
@@ -206,18 +214,11 @@ class TCacheResult(object):
             pass
         return result
     
-    def _flushFailIP(self):
+    def flushFailIP(self):
         if self.failipqueue.qsize() > 0 :
             logging.info(";".join(self._queuetolist(self.failipqueue)) + " timeout")
-            
-    def flushFailIP(self):
-        try:
-            self.errlock.acquire()        
-            if self.failipqueue.qsize() > 0 :
-                logging.info(";".join(self._queuetolist(self.failipqueue)) + " timeout")
-        finally:
-            self.errlock.release()         
-            
+
+
     def loadLastResult(self):
         okresult  = set()
         errorresult = set()
@@ -543,16 +544,11 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
     for p in threadlist:
         p.join()
     cacheResult.close()
-    
-def goodbye():
-    PRINT("[%d]say goodbye" % os.getpid())
-        
+
+
 def callsingleprocess(ipqueue,cacheResult,max_threads):
     PRINT("Start Process")
-    import atexit
-    atexit.register(goodbye)
     checksingleprocess(ipqueue, cacheResult,max_threads)
-    cacheResult.flushFailIP()
     PRINT("End Process")
     
 def checkmultiprocess(ipqueue,cacheResult):
@@ -593,6 +589,8 @@ def list_ping():
         PRINT("support gevent")
     if g_useprocess > 1:
         PRINT("support multiprocess")
+    if g_supportwidecheck == 1:
+        PRINT("support fuzzy matching ssl domain")    
 
     iprangelist = []
     checkqueue = Queue()
