@@ -52,7 +52,11 @@ if g_usegevent == 1:
     except ImportError:
         g_usegevent = 0
 
-g_useprocess = 5
+#默认只允许win及linux系统开启多进程处理 
+if sys.platform == "win32" or sys.platform.startswith("linux"):
+    g_useprocess = 5
+else:
+    g_useprocess = 0
 
 """
 ip_str_list为需要查找的IP地址，第一组的格式：
