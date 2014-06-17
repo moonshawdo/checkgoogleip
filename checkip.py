@@ -15,6 +15,7 @@ import re
 import select
 import traceback
 import logging
+import random
 
 if sys.version_info[0] == 3:
     from queue import Queue, Empty
@@ -68,6 +69,9 @@ ip_str_list为需要查找的IP地址，第一组的格式：
 ip_str_list = '''
 218.253.0.80-218.253.0.90
 '''
+
+#查询随机的IP列表，为0表示所有IP随机排列，如果非0，表示只取指定数量的随机IP查询
+g_ramdomipcnt = 0
 
 "连接超时设置"
 g_conntimeout = 5
@@ -619,6 +623,7 @@ def list_ping():
     iplineslist = re.split("\r|\n", ip_str_list)
     skipokcnt = 0
     skiperrocnt = 0
+    orglist = []
     for iplines in iplineslist:
         if len(iplines) == 0 or iplines[0] == '#':
             continue
@@ -642,11 +647,24 @@ def list_ping():
                         #PRINT("ip:%s had check error last" % ip)
                         skiperrocnt += 1
                     else:
-                        checkqueue.put(nbegin)
+                        orglist.append(nbegin)
                 else:
-                    checkqueue.put(nbegin)
+                    orglist.append(nbegin)
                 nbegin += 1
     
+    global g_ramdomipcnt
+    orglist_len = len(orglist)
+    if g_ramdomipcnt == 0:
+        g_ramdomipcnt = orglist_len
+    elif g_ramdomipcnt > orglist_len:
+        g_ramdomipcnt = orglist_len
+    # 生成随机IP队列
+    for i in xrange(0,g_ramdomipcnt):
+        k = random.randint(i,orglist_len - 1)
+        tmp = orglist[k]
+        orglist[k] = orglist[i]
+        checkqueue.put(tmp)
+
     if skipokcnt != 0 or skiperrocnt != 0:
         PRINT("skip ok cnt:%d,skip error cnt: %d" % (skipokcnt,skiperrocnt) )
 
