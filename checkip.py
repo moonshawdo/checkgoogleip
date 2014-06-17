@@ -33,6 +33,14 @@ import time
 
 g_useOpenSSL = 1
 g_usegevent = 1
+if g_usegevent == 1:
+    try:
+        from gevent import monkey
+        monkey.patch_all()
+        g_useOpenSSL = 0
+    except ImportError:
+        g_usegevent = 0
+
 if g_useOpenSSL == 1:
     try:
         import OpenSSL.SSL
@@ -45,18 +53,8 @@ if g_useOpenSSL == 1:
 else:
     SSLError = ssl.SSLError
 
-if g_usegevent == 1:
-    try:
-        from gevent import monkey
-        monkey.patch_all()
-    except ImportError:
-        g_usegevent = 0
 
-#默认只允许win及linux系统开启多进程处理 
-if sys.platform == "win32" or sys.platform.startswith("linux"):
-    g_useprocess = 5
-else:
-    g_useprocess = 0
+g_useprocess = 0
 
 """
 ip_str_list为需要查找的IP地址，第一组的格式：
@@ -81,11 +79,10 @@ g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 
-g_maxthreads = 256
+g_maxthreads = 128
 if g_usegevent == 1:
     "must set g_useprocess = 0"
     g_useprocess = 0
-    g_maxthreads = 512
 
 if g_useprocess > 1:
     try:
@@ -93,13 +90,6 @@ if g_useprocess > 1:
         from multiprocessing import Process,JoinableQueue as Queue
     except ImportError:
         g_useprocess = 0
-
-if g_usegevent == 1:
-    pass
-elif g_useOpenSSL and g_useprocess == 0:
-    g_maxthreads = 512
-elif g_useOpenSSL == 0:
-    g_maxthreads = 256
 
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
@@ -190,7 +180,7 @@ class TCacheResult(object):
             self.errorfile.seek(0,2)
             self.errorfile.write(ip+"\n")
             self.failipqueue.put(ip)
-            if self.failipqueue.qsize() > 512:
+            if self.failipqueue.qsize() > 128:
                 self.flushFailIP()
         finally:
             self.errlock.release() 
@@ -217,10 +207,22 @@ class TCacheResult(object):
         except Empty:
             pass
         return result
+
+    def _cleanqueue(self,myqueue):
+        try:
+            qsize = myqueue.qsize()
+            while qsize > 0:
+                myqueue.get_nowait()
+                myqueue.task_done()
+                qsize -= 1
+        except Empty:
+            pass
     
     def flushFailIP(self):
         if self.failipqueue.qsize() > 0 :
-            logging.info(";".join(self._queuetolist(self.failipqueue)) + " timeout")
+            qsize = self.failipqueue.qsize()
+            self._cleanqueue(self.failipqueue)
+            logging.info( str(qsize) + " ip timeout")
 
 
     def loadLastResult(self):
@@ -280,6 +282,7 @@ class my_ssl_wrap(object):
         s = None
         c = None
         haserror = 1
+        timeout = 0
         try:
             s = socket.socket()
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -314,9 +317,9 @@ class my_ssl_wrap(object):
                         domain = subject[1]
                         PRINT("ip: %s,CN: %s " % (ip, domain))
                         haserror = 0
-                        return domain, costtime
+                        return domain, costtime,timeout
                 PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
-                return None, costtime
+                return None, costtime,timeout
             else:
                 s.settimeout(g_conntimeout)
                 c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile,
@@ -346,28 +349,32 @@ class my_ssl_wrap(object):
                                     domain = item[1]
                                 PRINT("ip: %s,CN: %s " % (ip, domain))
                                 haserror = 0
-                                return domain, costtime
+                                return domain, costtime,timeout
                     PRINT("%s can not get commonName: %s " % (ip, subjectitems))
                 else:
                     PRINT("%s can not get subject: %s " % (ip, cert))
-                return None, costtime
+                return None, costtime,timeout
         except SSLError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
-            if "timed out"  not in str(e):
+            if str(e).endswith("timed out"):
+                timeout = 1
+            else:
                 PRINT("SSL Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return None, costtime
+            return None, costtime,timeout
         except IOError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
-            if "timed out"  not in str(e):
+            if str(e).endswith("timed out"):
+                timeout = 1
+            else:
                 PRINT("Catch IO Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return None, costtime
+            return None, costtime,timeout
         except Exception as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
             PRINT("Catch Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return None, costtime
+            return None, costtime,timeout
         finally:
             if g_useOpenSSL:
                 if c:
@@ -406,7 +413,10 @@ class Ping(threading.Thread):
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
-                (ssldomain, costtime) = ssl_obj.getssldomain(self.getName(), ipaddr)
+                (ssldomain, costtime,timeout) = ssl_obj.getssldomain(self.getName(), ipaddr)
+                if ssldomain is None and timeout == 1:
+                    # try again
+                    (ssldomain, costtime,timeout) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
                     self.cacheResult.addOKIP(costtime, ipaddr, ssldomain)
                 elif ssldomain is None:
