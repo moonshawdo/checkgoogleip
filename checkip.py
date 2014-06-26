@@ -67,7 +67,16 @@ ip_str_list为需要查找的IP地址，第一组的格式：
 组与组之间可以用换行、'|'或','相隔开
 """
 ip_str_list = '''
-218.253.0.80-218.253.0.90
+216.239.32.0/19
+64.233.160.0/19
+66.249.80.0/20
+72.14.192.0/18
+209.85.128.0/17
+66.102.0.0/20
+74.125.0.0/16
+64.18.0.0/20
+207.126.144.0/20
+173.194.0.0/16
 '''
 
 #查询随机的IP列表，为0表示所有IP随机排列，如果非0，表示只取指定数量的随机IP查询
@@ -333,9 +342,10 @@ class my_ssl_wrap(object):
                     PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
                 #尝试发送http请求，获取回应头部的Server字段
                 if domain is None or isgoolgledomain(domain) == 2:
+                    curtime = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
-                    costtime = int(time_end * 1000 - time_begin * 1000)
+                    costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
                         domain="defaultgws"
                 if domain is not None:
@@ -366,9 +376,10 @@ class my_ssl_wrap(object):
                         PRINT("%s can not get commonName: %s " % (ip, subjectitems))
                 #尝试发送http请求，获取回应头部的Server字段
                 if domain is None or isgoolgledomain(domain) == 2:
+                    curtime = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
-                    costtime = int(time_end * 1000 - time_begin * 1000)                    
+                    costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
                         domain="defaultgws"
                 if domain is not None:
