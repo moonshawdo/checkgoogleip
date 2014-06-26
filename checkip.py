@@ -71,7 +71,7 @@ ip_str_list = '''
 '''
 
 #查询随机的IP列表，为0表示所有IP随机排列，如果非0，表示只取指定数量的随机IP查询
-g_ramdomipcnt = 0
+g_ramdomipcnt = 700
 
 "连接超时设置"
 g_conntimeout = 5
@@ -100,23 +100,13 @@ if g_usegevent == 1 and g_maxthreads > 1000:
     g_maxthreads = 768
 
 
-g_ssldomain = ("google.com", "google.pk", "google.co.uk","*.google.com")
-g_supportwidecheck = 1
-if sys.platform == "win32":
-    "在win平台，开启多进程时，判断item[i] != '?' 后，会导致子进程不能退出，因此win平台使用多进程时不支持模糊匹配"
-    if g_useprocess > 0:
-        g_supportwidecheck = 0
-
-if g_supportwidecheck == 1:
-    g_excludessdomain=()
-    g_excludessdomainlen = len(g_excludessdomain)
-    # g_ssldomainrange里面的元素是模糊匹配，只支持"?",表示任意一个字母
-    g_ssldomainrange=("*.google.com.??",)
+g_ssldomain = ("google.com",)
+g_excludessdomain=()
 
 
 "是否自动删除记录查询成功的IP文件，0为不删除，1为删除"
 "文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名"
-g_autodeltmpokfile = 0
+g_autodeltmpokfile = 1
 "是否自动删除记录查询失败的IP文件，0为不删除，1为删除"
 "ip_tmperror.txt，格式：ip"
 g_autodeltmperrorfile = 0
@@ -126,29 +116,42 @@ logging.basicConfig(format="[%(process)d][%(threadName)s]%(message)s",level=logg
 def PRINT(strlog):
     logging.info(strlog)
     
-
-def checkvalidssldomain(domain):
+def isgoolgledomain(domain):
     lowerdomain = domain.lower()
     if lowerdomain in g_ssldomain:
+        return 1
+    if lowerdomain in g_excludessdomain:
+        return 0
+    return 2
+
+def isgoogleserver(svrname):
+    lowerdomain = svrname.lower()
+    if lowerdomain == "gws":
         return True
-    if g_supportwidecheck == 0:
-        return False
-    
-    if g_excludessdomainlen != 0 and lowerdomain in g_excludessdomain:
-        return False
     else:
-        for item in g_ssldomainrange:
-            itemlen = len(item)
-            domainlen = len(lowerdomain)
-            if itemlen != domainlen:
-                continue
-            i = 0
-            while i < itemlen:
-                if item[i] != '?' and domain[i] != item[i]:
-                    return False
-                i += 1
-            return True
-    return False
+        return False
+
+def checkvalidssldomain(domain,svrname):
+    ret = isgoolgledomain(domain)
+    if ret == 1:
+        return True
+    elif ret == 0:
+        return False
+    elif len(svrname) > 0 and isgoogleserver(svrname):
+        return True
+    else:
+        return False
+
+prekey="\nServer:"
+def getgooglesvrnamefromheader(header):
+    begin = header.find(prekey)
+    if begin != -1: 
+        begin += len(prekey)
+        end = header.find("\n",begin)
+        if end != -1: 
+            gws = header[begin:end].strip(" \t")
+            return gws
+    return ""
 
 class TCacheResult(object):
     def __init__(self):
@@ -163,15 +166,15 @@ class TCacheResult(object):
         self.okfile = None
         self.errorfile = None
     
-    def addOKIP(self,costtime,ip,ssldomain):
-        if checkvalidssldomain(ssldomain):
-            self.okqueue.put((costtime,ip,ssldomain))
+    def addOKIP(self,costtime,ip,ssldomain,gwsname):
+        if checkvalidssldomain(ssldomain,gwsname):
+            self.okqueue.put((costtime,ip,ssldomain,gwsname))
         try:
             self.oklock.acquire()
             if self.okfile is None:
                 self.okfile = open(g_tmpokfile,"a+",0)
             self.okfile.seek(0,2)
-            line = "%s %d %s\n" % (ip, costtime, ssldomain)
+            line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
             self.okfile.write(line)
         finally:
             self.oklock.release()
@@ -238,9 +241,12 @@ class TCacheResult(object):
                     ips = line.strip("\r\n").split(" ")
                     if len(ips) < 3:
                         continue
+                    gwsname = ""
+                    if len(ips) > 3:
+                        gwsname = ips[3]
                     okresult.add(ips[0])
-                    if checkvalidssldomain(ips[2]):
-                        self.okqueue.put((int(ips[1]),ips[0],ips[2]))
+                    if checkvalidssldomain(ips[2],gwsname):
+                        self.okqueue.put((int(ips[1]),ips[0],ips[2],gwsname))
         if os.path.exists(g_tmperrorfile):
             with open(g_tmperrorfile,"r") as fd:
                 for line in fd:
@@ -261,6 +267,7 @@ class TCacheResult(object):
 class my_ssl_wrap(object):
     ssl_cxt = None
     ssl_cxt_lock = threading.Lock()
+    httpreq = "GET / HTTP/1.1\r\nAccept: */*\r\nHost: %s\r\nConnection: Keep-Alive\r\n\r\n"
 
     def __init__(self):
         pass
@@ -287,6 +294,8 @@ class my_ssl_wrap(object):
         c = None
         haserror = 1
         timeout = 0
+        domain = None
+        gwsname = ""
         try:
             s = socket.socket()
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -319,11 +328,19 @@ class my_ssl_wrap(object):
                 for subject in cert.get_subject().get_components():
                     if subject[0] == "CN":
                         domain = subject[1]
-                        PRINT("ip: %s,CN: %s " % (ip, domain))
                         haserror = 0
-                        return domain, costtime,timeout
-                PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
-                return None, costtime,timeout
+                if domain is None:
+                    PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
+                #尝试发送http请求，获取回应头部的Server字段
+                if domain is None or isgoolgledomain(domain) == 2:
+                    gwsname = self.getgooglesvrname(c,s,ip)
+                    time_end = time.time()
+                    costtime = int(time_end * 1000 - time_begin * 1000)
+                    if domain is None and len(gwsname) > 0:
+                        domain="defaultgws"
+                if domain is not None:
+                    PRINT("ip: %s,CN: %s,svr: %s" % (ip, domain,gwsname))
+                return domain, costtime,timeout,gwsname
             else:
                 s.settimeout(g_conntimeout)
                 c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile,
@@ -335,13 +352,6 @@ class my_ssl_wrap(object):
                 cert = c.getpeercert()
                 time_end = time.time()
                 costtime = int(time_end * 1000 - time_begin * 1000)
-                '''cert format:
-                {'notAfter': 'Aug 20 00:00:00 2014 GMT', 'subjectAltName': (('DNS', 'google.com'),
-                  ('DNS', 'youtubeeducation.com')),
-                  'subject': ((('countryName', u'US'),), (('stateOrProvinceName', u'California'),),
-                  (('localityName', u'Mountain View'),), (('organizationName', u'Google Inc'),),
-                  (('commonName', u'google.com'),))
-                }'''
                 if 'subject' in cert:
                     subjectitems = cert['subject']
                     for mysets in subjectitems:
@@ -351,13 +361,19 @@ class my_ssl_wrap(object):
                                     domain = item[1].encode("utf-8")
                                 else:
                                     domain = item[1]
-                                PRINT("ip: %s,CN: %s " % (ip, domain))
                                 haserror = 0
-                                return domain, costtime,timeout
-                    PRINT("%s can not get commonName: %s " % (ip, subjectitems))
-                else:
-                    PRINT("%s can not get subject: %s " % (ip, cert))
-                return None, costtime,timeout
+                    if domain is None:
+                        PRINT("%s can not get commonName: %s " % (ip, subjectitems))
+                #尝试发送http请求，获取回应头部的Server字段
+                if domain is None or isgoolgledomain(domain) == 2:
+                    gwsname = self.getgooglesvrname(c,s,ip)
+                    time_end = time.time()
+                    costtime = int(time_end * 1000 - time_begin * 1000)                    
+                    if domain is None and len(gwsname) > 0:
+                        domain="defaultgws"
+                if domain is not None:
+                    PRINT("ip: %s,CN: %s,svr: %s" % (ip, domain,gwsname))
+                return domain, costtime,timeout,gwsname
         except SSLError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
@@ -365,7 +381,7 @@ class my_ssl_wrap(object):
                 timeout = 1
             else:
                 PRINT("SSL Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return None, costtime,timeout
+            return domain, costtime,timeout,gwsname
         except IOError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
@@ -373,12 +389,12 @@ class my_ssl_wrap(object):
                 timeout = 1
             else:
                 PRINT("Catch IO Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return None, costtime,timeout
+            return domain, costtime,timeout,gwsname
         except Exception as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
             PRINT("Catch Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return None, costtime,timeout
+            return domain, costtime,timeout,gwsname
         finally:
             if g_useOpenSSL:
                 if c:
@@ -395,6 +411,26 @@ class my_ssl_wrap(object):
                     c.close()
                 elif s:
                     s.close()
+                    
+    def getgooglesvrname(self,conn,sock,ip):
+        try:
+            myreq = my_ssl_wrap.httpreq % ip
+            conn.write(myreq)
+            data=""
+            while True:
+                infds, outfds, errfds = select.select([sock, ], [], [], g_conntimeout)
+                if len(infds) == 0:
+                    break
+                d = conn.read(1024)
+                data = data + d.replace("\r","")
+                index = data.find("\n\n")
+                if index != -1:
+                    gwsname = getgooglesvrnamefromheader(data[0:index])
+                    return gwsname
+            return gwsname
+        except Exception as e:
+            PRINT("Catch Exception(%s) in getgooglesvrname: %s" % (ip, e))
+            return ""
 
 
 class Ping(threading.Thread):
@@ -417,12 +453,12 @@ class Ping(threading.Thread):
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
-                (ssldomain, costtime,timeout) = ssl_obj.getssldomain(self.getName(), ipaddr)
+                (ssldomain, costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is None and timeout == 1:
                     # try again
-                    (ssldomain, costtime,timeout) = ssl_obj.getssldomain(self.getName(), ipaddr)
+                    (ssldomain, costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
-                    self.cacheResult.addOKIP(costtime, ipaddr, ssldomain)
+                    self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
                 elif ssldomain is None:
                     self.cacheResult.addFailIP(ipaddr)
             except Empty:
@@ -444,10 +480,10 @@ class Ping(threading.Thread):
     @staticmethod 
     def getCount():
         try:
-           Ping.ncount_lock.acquire()
-           return Ping.ncount
+            Ping.ncount_lock.acquire()
+            return Ping.ncount
         finally:
-           Ping.ncount_lock.release()
+            Ping.ncount_lock.release()
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
@@ -607,8 +643,6 @@ def list_ping():
         PRINT("support gevent")
     if g_useprocess > 1:
         PRINT("support multiprocess")
-    if g_supportwidecheck == 1:
-        PRINT("support fuzzy matching ssl domain")    
 
     iprangelist = []
     checkqueue = Queue()
@@ -686,7 +720,7 @@ def list_ping():
     ncount = 0
     for ip in ip_list:
         domain = ip[2]
-        PRINT("[%s] %d ms,domain: %s" % (ip[1], ip[0], domain))
+        PRINT("[%s] %d ms,domain: %s,svr:%s" % (ip[1], ip[0], domain,ip[3]))
         if domain is not None:
             ff.write(ip[1])
             ff.write("|")
