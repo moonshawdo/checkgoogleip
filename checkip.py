@@ -438,7 +438,7 @@ class my_ssl_wrap(object):
                 if index != -1:
                     gwsname = getgooglesvrnamefromheader(data[0:index])
                     return gwsname
-            return gwsname
+            return ""
         except Exception as e:
             PRINT("Catch Exception(%s) in getgooglesvrname: %s" % (ip, e))
             return ""
@@ -655,7 +655,6 @@ def list_ping():
     if g_useprocess > 1:
         PRINT("support multiprocess")
 
-    iprangelist = []
     checkqueue = Queue()
     cacheResult = TCacheResult()
     lastokresult,lasterrorresult = cacheResult.loadLastResult()

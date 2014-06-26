@@ -5,8 +5,8 @@ checkgoogleip
 
 检查方法
 -------------
-* 默认使用pyOpenSSL库与多进程检查服务器证书，如果不支持，就用内置的ssl库连接到该IP,并使用cacert.pem来获取服务器证书
-* 检查该 IP是否使用google.com的证书
+* 默认使用内置的ssl库连接到该IP,并使用cacert.pem来获取服务器证书，可以通过修改变量来支持pyOpenSSL库获取服务器证书，
+* 检查该 IP是否使用google.com的证书,如果不是该域名，则发送http请求，然后检查回应头部的Server是否为gws
 * 以响应时间排序，时间越少，排序就越前
 
 注意
@@ -22,9 +22,8 @@ checkgoogleip
     如218.253.0.80  
 组与组之间可以用换行、'|'或','相隔开
 * connect超时时间可以看g_commtimeout变量，时间为5秒，握手超时请看g_handshaketimeout，时间为7秒
-* 默认会尝试使用pyOpenSSL库与多进程，好处：明显优化cpu及内存使用，最大线程数量限制了256条，在测试中设置768也可以正常运行，程序在启动时cpu较高，几秒后会降下来，如果不支持pyOpenSSL库，则使用内置的ssl库，最大线程数量限制在256条，在测试中，发现超过378条的话，会导致部分线程加载证书失败
-* 当使用gevent时，会禁用多进程处理，因为暂时没找到会线程挂住的原因
-* 脚本默认只提供一组IP来测试，如果想查找更多的IP，请自行添加到脚本中
+* 默认会尝试使用gevent及内置的ssl库查询，好处：明显优化cpu及内存使用，最大线程数量限制了128条，可以支持pyOpenSSL库，但需要设置g_usegevent为0
+* 默认增加一些IP段检查，并且只随机检查700个IP 
 * 默认会保存测试IP的结果到ip_tmperror.txt（失败）与ip_tmpok.txt（成功），下次运行脚本时会预先读取，并会跳过这些IP的查询，如果不想保留ip_tmperror.txt，则g_autodeltmperrorfile为1，如果不想保留ip_tmpok.txt，则需要设置g_autodeltmpokfile=1，如果程序正常运行结束，则会检查g_autodeltmperrorfile及g_autodeltmpokfile，并执行对应的操作，如果程序运行异常，需要关闭程序，则会保留这两个文件
 
 使用方法
@@ -48,6 +47,9 @@ checkgoogleip
 
 更新说明
 -------------
+### 2014.06.27
+  * 优化查询可用IP，支持随机查询IP
+
 ### 2014.06.13
   * 使用两个临时文件来记录程序运行过程中查询成功与失败的IP地址，方便下次使用
   * 支持gevent,但只能在关闭pyOpenSSL库时使用
