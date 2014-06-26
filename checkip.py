@@ -342,7 +342,7 @@ class my_ssl_wrap(object):
                     PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
                 #尝试发送http请求，获取回应头部的Server字段
                 if domain is None or isgoolgledomain(domain) == 2:
-                    curtime = time.time()
+                    cur_time = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
                     costtime += int(time_end * 1000 - cur_time * 1000)
@@ -376,7 +376,7 @@ class my_ssl_wrap(object):
                         PRINT("%s can not get commonName: %s " % (ip, subjectitems))
                 #尝试发送http请求，获取回应头部的Server字段
                 if domain is None or isgoolgledomain(domain) == 2:
-                    curtime = time.time()
+                    cur_time = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
                     costtime += int(time_end * 1000 - cur_time * 1000)
