@@ -31,7 +31,8 @@ if sys.version_info[0] == 3:
 else:
     from Queue import Queue, Empty
 import time
-
+from time import sleep
+ 
 g_useOpenSSL = 1
 g_usegevent = 1
 if g_usegevent == 1:
@@ -39,6 +40,7 @@ if g_usegevent == 1:
         from gevent import monkey
         monkey.patch_all()
         g_useOpenSSL = 0
+        from gevent import sleep
     except ImportError:
         g_usegevent = 0
 
@@ -120,7 +122,7 @@ g_autodeltmpokfile = 1
 "ip_tmperror.txt，格式：ip"
 g_autodeltmperrorfile = 0
 
-logging.basicConfig(format="[%(process)d][%(threadName)s]%(message)s",level=logging.INFO)
+logging.basicConfig(format="[%(threadName)s]%(message)s",level=logging.INFO)
 
 def PRINT(strlog):
     logging.info(strlog)
@@ -433,12 +435,17 @@ class my_ssl_wrap(object):
                 infds, outfds, errfds = select.select([sock, ], [], [], g_conntimeout)
                 if len(infds) == 0:
                     break
+                trycnt = 0
                 while True:
                     try:
                         d = conn.read(1024)
                         break
-                    except SSLError:
-                        time.sleep(0.5)
+                    except SSLError as e:
+                        trycnt += 1
+                        if trycnt > 6:
+                          return ""
+                        PRINT("try to read http response again")
+                        sleep(0.5)
                         pass
                 data = data + d.replace("\r","")
                 index = data.find("\n\n")
@@ -589,6 +596,7 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
             break
         threadlist.append(ping_thread)
     evt_ready.wait()
+    error = 0
     try:
         time_begin = time.time()
         logtime = time_begin
@@ -603,11 +611,10 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
                 time_begin = time_end
                 lastcount = count
             else:
-                if time_end - time_begin > g_handshaketimeout * 3:
+                if time_end - time_begin > g_handshaketimeout * 5:
                     dumpstacks()
-                    break;
-                else:
-                    time_begin = time_end
+                    error = 1
+                    break
             if time_end - logtime > 60:
                 PRINT("has thread count:%d,ip total cnt:%d" % (Ping.getCount(),queuesize))
                 logtime = time_end
@@ -616,8 +623,9 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
     except KeyboardInterrupt:
         PRINT("need wait all thread end...")
         evt_finish.set()
-    for p in threadlist:
-        p.join()
+    if error == 0:
+        for p in threadlist:
+          p.join()
     cacheResult.close()
 
 
