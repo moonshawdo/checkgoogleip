@@ -157,9 +157,10 @@ def getgooglesvrnamefromheader(header):
     if begin != -1: 
         begin += len(prekey)
         end = header.find("\n",begin)
-        if end != -1: 
-            gws = header[begin:end].strip(" \t")
-            return gws
+        if end == -1:
+            end = len(header)
+        gws = header[begin:end].strip(" \t")
+        return gws
     return ""
 
 class TCacheResult(object):
@@ -432,7 +433,13 @@ class my_ssl_wrap(object):
                 infds, outfds, errfds = select.select([sock, ], [], [], g_conntimeout)
                 if len(infds) == 0:
                     break
-                d = conn.read(1024)
+                while True:
+                    try:
+                        d = conn.read(1024)
+                        break
+                    except SSLError:
+                        time.sleep(0.5)
+                        pass
                 data = data + d.replace("\r","")
                 index = data.find("\n\n")
                 if index != -1:
@@ -440,7 +447,10 @@ class my_ssl_wrap(object):
                     return gwsname
             return ""
         except Exception as e:
-            PRINT("Catch Exception(%s) in getgooglesvrname: %s" % (ip, e))
+            info = "%s" % e
+            if len(info) == 0:
+                info = type(e)
+            PRINT("Catch Exception(%s) in getgooglesvrname: %s" % (ip, info))
             return ""
 
 
@@ -456,8 +466,8 @@ class Ping(threading.Thread):
         self.evt_ready = evt_ready
 
     def runJob(self):
-        while not self.evt_ready.is_set():
-            self.evt_ready.wait(5)
+        if not self.evt_ready.is_set():
+            self.evt_ready.set()
         while not self.evt_finish.is_set() and self.queue.qsize() > 0:
             try:
                 addrint = self.queue.get(True,5)
@@ -578,7 +588,7 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
             "can not create new thread"
             break
         threadlist.append(ping_thread)
-    evt_ready.set()
+    evt_ready.wait()
     try:
         time_begin = time.time()
         logtime = time_begin
