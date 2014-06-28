@@ -431,6 +431,7 @@ class my_ssl_wrap(object):
             myreq = my_ssl_wrap.httpreq % ip
             conn.write(myreq)
             data=""
+            sock.setblocking(0)
             while True:
                 infds, outfds, errfds = select.select([sock, ], [], [], g_conntimeout)
                 if len(infds) == 0:
