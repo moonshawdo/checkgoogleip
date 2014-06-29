@@ -66,9 +66,16 @@ ip_str_list为需要查找的IP地址，第一组的格式：
 3.xxx.xxx.xxx.
 4 xxx.xxx.xxx.xxx
 
-组与组之间可以用换行、'|'或','相隔开
+组与组之间可以用换行相隔开,第一行中IP段可以用'|'或','
+获取随机IP是每组依次获取随机个数量的，因此一组的IP数越少，越有机会会检查，当然获取随机IP会先排除上次查询失败的IP
 """
 ip_str_list = '''
+218.189.25.166-218.189.25.187|121.78.74.80-121.78.74.88|178.45.251.84-178.45.251.123|210.61.221.148-210.61.221.187
+61.219.131.84-61.219.131.251|202.39.143.84-202.39.143.123|203.66.124.148-203.66.124.251|203.211.0.20-203.211.0.59
+60.199.175.18-60.199.175.187|218.176.242.20-218.176.242.251|203.116.165.148-203.116.165.251|203.117.34.148-203.117.34.187
+210.153.73.20-210.153.73.123|106.162.192.148-106.162.192.187|106.162.198.84-106.162.198.123|106.162.216.20-106.162.216.123
+210.139.253.20-210.139.253.251|111.168.255.20-111.168.255.187|203.165.13.210-203.165.13.251
+61.19.1.30-61.19.1.109|74.125.31.33-74.125.31.60|210.242.125.20-210.242.125.59|203.165.14.210-203.165.14.251
 216.239.32.0/19
 64.233.160.0/19
 66.249.80.0/20
@@ -686,10 +693,12 @@ def list_ping():
     iplineslist = re.split("\r|\n", ip_str_list)
     skipokcnt = 0
     skiperrocnt = 0
-    orglist = []
+    iplinelist = []
+    totalipcnt = 0
     for iplines in iplineslist:
         if len(iplines) == 0 or iplines[0] == '#':
             continue
+        singlelist = []
         ips = re.split(",|\|", iplines)
         for line in ips:
             if len(line) == 0 or line[0] == '#':
@@ -710,24 +719,52 @@ def list_ping():
                         #PRINT("ip:%s had check error last" % ip)
                         skiperrocnt += 1
                     else:
-                        orglist.append(nbegin)
+                        singlelist.append(nbegin)
                 else:
-                    orglist.append(nbegin)
+                    singlelist.append(nbegin)
                 nbegin += 1
+        if len(singlelist) > 0:
+            iplinelist.append(singlelist)
+            totalipcnt += len(singlelist)
     
-    global g_ramdomipcnt
-    orglist_len = len(orglist)
-    if g_ramdomipcnt == 0:
-        g_ramdomipcnt = orglist_len
-    elif g_ramdomipcnt > orglist_len:
-        g_ramdomipcnt = orglist_len
-    # 生成随机IP队列
-    for i in xrange(0,g_ramdomipcnt):
-        k = random.randint(i,orglist_len - 1)
-        tmp = orglist[k]
-        orglist[k] = orglist[i]
-        checkqueue.put(tmp)
+    PRINT("total ip:%d,random ip array:%d" % (totalipcnt,len(iplinelist)))
 
+    global g_ramdomipcnt
+    if g_ramdomipcnt == 0:
+        g_ramdomipcnt = totalipcnt
+    elif g_ramdomipcnt > totalipcnt:
+        g_ramdomipcnt = totalipcnt
+    # 生成随机IP队列
+    randomcnt = 0
+    randomlist = []
+    # 循环从ip组中获取随机个ip(2-5或10个)到一个指定的数组，然后该数组在完成后再次用random.shuffle打乱
+    while randomcnt < g_ramdomipcnt:
+        for itemlist in iplinelist:
+            itemlen = len(itemlist)
+            if itemlen == 0:
+                continue
+            if itemlen > 1000:
+                itemlen = 10
+            elif itemlen > 5:
+                itemlen = 5
+            if itemlen > g_ramdomipcnt - randomcnt:
+                itemlen = g_ramdomipcnt - randomcnt
+            if itemlen <= 2:
+                selectcnt = itemlen
+            else:
+                selectcnt = random.randint(2,itemlen)
+            for i in xrange(0,selectcnt):
+                k = random.randint(0,itemlen - 1)
+                itemlen -= 1
+                randomcnt += 1
+                randomlist.append(itemlist.pop(k))
+            if randomcnt >= g_ramdomipcnt:
+                break
+    
+    random.shuffle(randomlist)
+    for item in randomlist:
+        checkqueue.put(item)
+    
     if skipokcnt != 0 or skiperrocnt != 0:
         PRINT("skip ok cnt:%d,skip error cnt: %d" % (skipokcnt,skiperrocnt) )
 
