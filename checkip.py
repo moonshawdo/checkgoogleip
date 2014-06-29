@@ -38,7 +38,7 @@ g_usegevent = 1
 if g_usegevent == 1:
     try:
         from gevent import monkey
-        monkey.patch_all()
+        monkey.patch_all(select=False)
         g_useOpenSSL = 0
         from gevent import sleep
     except ImportError:
@@ -89,7 +89,7 @@ ip_str_list = '''
 '''
 
 #查询随机的IP列表，为0表示所有IP随机排列，如果非0，表示只取指定数量的随机IP查询
-g_ramdomipcnt = 700
+g_ramdomipcnt = 1300
 
 "连接超时设置"
 g_conntimeout = 5
@@ -724,6 +724,7 @@ def list_ping():
                     singlelist.append(nbegin)
                 nbegin += 1
         if len(singlelist) > 0:
+            random.shuffle(singlelist)
             iplinelist.append(singlelist)
             totalipcnt += len(singlelist)
     
@@ -741,6 +742,7 @@ def list_ping():
     while randomcnt < g_ramdomipcnt:
         for itemlist in iplinelist:
             itemlen = len(itemlist)
+            itemlist_len = itemlen
             if itemlen == 0:
                 continue
             if itemlen > 1000:
@@ -754,8 +756,7 @@ def list_ping():
             else:
                 selectcnt = random.randint(2,itemlen)
             for i in xrange(0,selectcnt):
-                k = random.randint(0,itemlen - 1)
-                itemlen -= 1
+                k = random.randint(0,itemlist_len-1-i)
                 randomcnt += 1
                 randomlist.append(itemlist.pop(k))
             if randomcnt >= g_ramdomipcnt:
