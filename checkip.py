@@ -38,7 +38,7 @@ g_usegevent = 1
 if g_usegevent == 1:
     try:
         from gevent import monkey
-        monkey.patch_all(select=False)
+        monkey.patch_all(Event=True)
         g_useOpenSSL = 0
         from gevent import sleep
     except ImportError:
@@ -359,7 +359,7 @@ class my_ssl_wrap(object):
                     if domain is None and len(gwsname) > 0:
                         domain="defaultgws"
                 if domain is not None:
-                    PRINT("ip: %s,CN: %s,svr: %s" % (ip, domain,gwsname))
+                    PRINT("ip: %s,CN: %s,svr: %s,ok:%d" % (ip, domain,gwsname,checkvalidssldomain(domain,gwsname)))
                 return domain, costtime,timeout,gwsname
             else:
                 s.settimeout(g_conntimeout)
@@ -393,7 +393,7 @@ class my_ssl_wrap(object):
                     if domain is None and len(gwsname) > 0:
                         domain="defaultgws"
                 if domain is not None:
-                    PRINT("ip: %s,CN: %s,svr: %s" % (ip, domain,gwsname))
+                    PRINT("ip: %s,CN: %s,svr: %s,ok:%d" % (ip, domain,gwsname,checkvalidssldomain(domain,gwsname)))
                 return domain, costtime,timeout,gwsname
         except SSLError as e:
             time_end = time.time()
@@ -439,10 +439,20 @@ class my_ssl_wrap(object):
             conn.write(myreq)
             data=""
             sock.setblocking(0)
+            selectcnt = 0
             while True:
-                infds, outfds, errfds = select.select([sock, ], [], [], g_conntimeout)
-                if len(infds) == 0:
-                    break
+                if g_usegevent == 0:
+                    infds, outfds, errfds = select.select([sock, ], [], [], g_conntimeout)
+                    if len(infds) == 0:
+                        return ""
+                else:
+                    infds, outfds, errfds = select.select([sock, ], [], [], 0)
+                    if len(infds) == 0:
+                        selectcnt += 1
+                        if selectcnt >= 8:
+                            return ""
+                        sleep(0.5)
+                        continue
                 trycnt = 0
                 while True:
                     try:
