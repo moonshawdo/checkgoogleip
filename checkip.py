@@ -439,32 +439,33 @@ class my_ssl_wrap(object):
             conn.write(myreq)
             data=""
             sock.setblocking(0)
-            selectcnt = 0
+            trycnt = 0
+            begin = time.time()
+            conntimeout = g_conntimeout if g_usegevent == 0 else 0.001
             while True:
-                if g_usegevent == 0:
-                    infds, outfds, errfds = select.select([sock, ], [], [], g_conntimeout)
-                    if len(infds) == 0:
+                trycnt += 1
+                infds, outfds, errfds = select.select([sock, ], [], [], conntimeout)
+                if len(infds) == 0:
+                    end = time.time()
+                    costime = int(end-begin)
+                    if costime >= g_conntimeout:
+                        PRINT("get http response timeout(%ss),ip:%s,cnt:%d" % (costime,ip,trycnt) )
                         return ""
-                else:
-                    infds, outfds, errfds = select.select([sock, ], [], [], 0)
-                    if len(infds) == 0:
-                        selectcnt += 1
-                        if selectcnt >= 8:
-                            return ""
+                    if g_usegevent == 1:
                         sleep(0.5)
-                        continue
-                trycnt = 0
-                while True:
-                    try:
-                        d = conn.read(1024)
-                        break
-                    except SSLError as e:
-                        trycnt += 1
-                        if trycnt > 6:
-                          return ""
-                        PRINT("try to read http response again")
-                        sleep(0.5)
-                        pass
+                    continue
+                timeout = 0
+                try:
+                    d = conn.read(1024)
+                except SSLError as e:
+                    end = time.time()
+                    costime = int(end-begin)
+                    if costime >= g_conntimeout:
+                        PRINT("read http response timeout(%ss),ip:%s,cnt:%d" % (costime,ip,trycnt) )
+                        return ""
+                    sleep(0.5)
+                    timeout = 1
+                    continue
                 data = data + d.replace("\r","")
                 index = data.find("\n\n")
                 if index != -1:
@@ -643,7 +644,7 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
         evt_finish.set()
     if error == 0:
         for p in threadlist:
-          p.join()
+            p.join()
     cacheResult.close()
 
 
