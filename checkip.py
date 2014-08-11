@@ -17,9 +17,10 @@ import traceback
 import logging
 import random
 
+PY3 = False
 if sys.version_info[0] == 3:
     from queue import Queue, Empty
-
+    PY3 = True
     try:
         from functools import reduce
     finally:
@@ -57,8 +58,6 @@ else:
     SSLError = ssl.SSLError
 
 
-g_useprocess = 0
-
 """
 ip_str_list为需要查找的IP地址，第一组的格式：
 1.xxx.xxx.xxx.xxx-xx.xxx.xxx.xxx
@@ -88,8 +87,11 @@ ip_str_list = '''
 173.194.0.0/16
 '''
 
-#查询随机的IP列表，为0表示所有IP随机排列，如果非0，表示只取指定数量的随机IP查询
-g_ramdomipcnt = 1300
+
+#最大IP延时，单位毫秒
+g_maxhandletimeout = 2000
+#最大可用IP数量
+g_maxhandleipcnt = 50
 
 "连接超时设置"
 g_conntimeout = 5
@@ -102,21 +104,10 @@ g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 
 g_maxthreads = 128
-if g_usegevent == 1:
-    "must set g_useprocess = 0"
-    g_useprocess = 0
-
-if g_useprocess > 1:
-    try:
-        import multiprocessing
-        from multiprocessing import Process,JoinableQueue as Queue
-    except ImportError:
-        g_useprocess = 0
 
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
-    g_maxthreads = 768
-
+    g_maxthreads = 128
 
 g_ssldomain = ("google.com",)
 g_excludessdomain=()
@@ -130,6 +121,10 @@ g_autodeltmpokfile = 1
 g_autodeltmperrorfile = 0
 
 logging.basicConfig(format="[%(threadName)s]%(message)s",level=logging.INFO)
+
+
+evt_ipramdomstart = threading.Event()
+evt_ipramdomend = threading.Event()
 
 def PRINT(strlog):
     logging.info(strlog)
@@ -173,20 +168,20 @@ def getgooglesvrnamefromheader(header):
     return ""
 
 class TCacheResult(object):
+    __slots__ = ["okqueue","failipqueue","oklock","errlock","okfile","errorfile","validipcnt"]
     def __init__(self):
         self.okqueue = Queue()
         self.failipqueue = Queue()
-        if g_useprocess > 1:
-            self.oklock = multiprocessing.Lock()
-            self.errlock = multiprocessing.Lock()
-        else:
-            self.oklock = threading.Lock()
-            self.errlock = threading.Lock()
+        self.oklock = threading.Lock()
+        self.errlock = threading.Lock()
         self.okfile = None
         self.errorfile = None
+        self.validipcnt = 0
     
     def addOKIP(self,costtime,ip,ssldomain,gwsname):
+        bOK = False
         if checkvalidssldomain(ssldomain,gwsname):
+            bOK = True
             self.okqueue.put((costtime,ip,ssldomain,gwsname))
         try:
             self.oklock.acquire()
@@ -195,6 +190,11 @@ class TCacheResult(object):
             self.okfile.seek(0,2)
             line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
             self.okfile.write(line)
+            if bOK and costtime <= g_maxhandletimeout:
+                self.validipcnt += 1
+                return self.validipcnt
+            else:
+                return 0
         finally:
             self.oklock.release()
             
@@ -282,6 +282,13 @@ class TCacheResult(object):
         if g_autodeltmperrorfile and os.path.exists(g_tmperrorfile):
             os.remove(g_tmperrorfile)
             PRINT("remove file %s" % g_tmperrorfile)
+            
+    def queryfinish(self):
+        try:
+            self.oklock.acquire()
+            return self.validipcnt >= g_maxhandleipcnt
+        finally:
+            self.oklock.release()
 
 class my_ssl_wrap(object):
     ssl_cxt = None
@@ -358,8 +365,6 @@ class my_ssl_wrap(object):
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
                         domain="defaultgws"
-                if domain is not None:
-                    PRINT("ip: %s,CN: %s,svr: %s,ok:%d" % (ip, domain,gwsname,checkvalidssldomain(domain,gwsname)))
                 return domain, costtime,timeout,gwsname
             else:
                 s.settimeout(g_conntimeout)
@@ -392,8 +397,6 @@ class my_ssl_wrap(object):
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
                         domain="defaultgws"
-                if domain is not None:
-                    PRINT("ip: %s,CN: %s,svr: %s,ok:%d" % (ip, domain,gwsname,checkvalidssldomain(domain,gwsname)))
                 return domain, costtime,timeout,gwsname
         except SSLError as e:
             time_end = time.time()
@@ -483,33 +486,34 @@ class my_ssl_wrap(object):
 class Ping(threading.Thread):
     ncount = 0
     ncount_lock = threading.Lock()
-
-    def __init__(self,checkqueue,cacheResult,evt_finish,evt_ready):
+    __slots__=["checkqueue","cacheResult"]
+    def __init__(self,checkqueue,cacheResult):
         threading.Thread.__init__(self)
         self.queue = checkqueue
         self.cacheResult = cacheResult
-        self.evt_finish = evt_finish
-        self.evt_ready = evt_ready
 
     def runJob(self):
-        if not self.evt_ready.is_set():
-            self.evt_ready.set()
-        while not self.evt_finish.is_set() and self.queue.qsize() > 0:
+        while not evt_ipramdomstart.is_set():
+            evt_ipramdomstart.wait(5)
+        while not evt_ipramdomend.is_set():
             try:
+                if self.cacheResult.queryfinish():
+                    break
                 addrint = self.queue.get(True,5)
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
                 (ssldomain, costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
-                if ssldomain is None and timeout == 1:
-                    # try again
-                    (ssldomain, costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
-                    self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
+                    cnt = self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
+                    if cnt != 0:
+                        PRINT("ip: %s,CN: %s,svr: %s,ok:1,cnt:%d" % (ipaddr, ssldomain,gwsname,cnt))
+                    else:
+                        PRINT("ip: %s,CN: %s,svr: %s,ok:0" % (ipaddr, ssldomain,gwsname))
                 elif ssldomain is None:
                     self.cacheResult.addFailIP(ipaddr)
             except Empty:
-                break
+                pass
 
     def run(self):
         try:
@@ -531,6 +535,80 @@ class Ping(threading.Thread):
             return Ping.ncount
         finally:
             Ping.ncount_lock.release()
+            
+            
+class RamdomIP(threading.Thread):
+    def __init__(self,checkqueue,cacheResult):
+        threading.Thread.__init__(self)
+        self.ipqueue = checkqueue
+        self.cacheResult = cacheResult
+        
+    def ramdomip(self):
+        lastokresult,lasterrorresult = self.cacheResult.loadLastResult()
+        iplineslist = re.split("\r|\n", ip_str_list)
+        skipokcnt = 0
+        skiperrocnt = 0
+        iplinelist = []
+        totalipcnt = 0
+        cacheip = lastokresult | lasterrorresult
+        for iplines in iplineslist:
+            if len(iplines) == 0 or iplines[0] == '#':
+                continue
+            singlelist = []
+            ips = re.split(",|\|", iplines)
+            for line in ips:
+                if len(line) == 0 or line[0] == '#':
+                    continue
+                begin, end = splitip(line)
+                if checkipvalid(begin) == 0 or checkipvalid(end) == 0:
+                    PRINT("ip format is error,line:%s, begin: %s,end: %s" % (line, begin, end))
+                    continue
+                nbegin = from_string(begin)
+                nend = from_string(end)
+                iplinelist.append([nbegin,nend,nend - nbegin + 1])
+        
+        hadIPData = True
+        putdata = False
+        while hadIPData:
+            if evt_ipramdomend.is_set():
+                break
+            hadIPData = False
+            for itemlist in iplinelist:
+                begin = itemlist[0]
+                end = itemlist[1]
+                itemlen = itemlist[2]
+                if itemlen <= 0:
+                    continue
+                if self.cacheResult.queryfinish():
+                    break
+                if itemlen > 1000:
+                    itemlen = 10
+                elif itemlen > 5:
+                    itemlen = 5
+                if itemlen <= 2:
+                    selectcnt = itemlen
+                else:
+                    selectcnt = random.randint(2,itemlen)
+                for i in xrange(0,selectcnt):
+                    k = random.randint(begin,end)
+                    while k in cacheip and k <= end:
+                        k += 1
+                    if k <= end:
+                        hadIPData = True
+                        self.ipqueue.put(k)
+                        if not putdata:
+                            evt_ipramdomstart.set()
+                            putdata = True
+                    if evt_ipramdomend.is_set():
+                        break
+                itemlist[2] -= i + 1
+            sleep(1)
+        
+    def run(self):
+        PRINT("begin to get ramdom ip")
+        self.ramdomip()
+        evt_ipramdomend.set()
+        PRINT("ramdom ip thread stopped.")
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
@@ -599,98 +677,29 @@ def dumpstacks():
 def checksingleprocess(ipqueue,cacheResult,max_threads):
     threadlist = []
     threading.stack_size(96 * 1024)
-    evt_finish = threading.Event()
-    evt_ready = threading.Event()    
-    qsize = ipqueue.qsize()
-    maxthreads = qsize if qsize < max_threads else max_threads
-    PRINT('need create max threads count: %d,total ip cnt: %d ' % (maxthreads, qsize))
-    for i in xrange(1, maxthreads + 1):
-        ping_thread = Ping(ipqueue,cacheResult,evt_finish,evt_ready)
+    PRINT('need create max threads count: %d' % (max_threads))
+    for i in xrange(1, max_threads + 1):
+        ping_thread = Ping(ipqueue,cacheResult)
         ping_thread.setDaemon(True)
         try:
             ping_thread.start()
         except threading.ThreadError as e:
             PRINT('start new thread except: %s,work thread cnt: %d' % (e, Ping.getCount()))
-            "can not create new thread"
             break
         threadlist.append(ping_thread)
-    evt_ready.wait()
-    error = 0
     try:
-        time_begin = time.time()
-        logtime = time_begin
-        count = Ping.getCount()
-        lastcount = count
-        while count > 0:
-            evt_finish.wait(2)
-            time_end = time.time()
-            queuesize = ipqueue.qsize()
-            count = Ping.getCount()
-            if lastcount != count or queuesize > 0:
-                time_begin = time_end
-                lastcount = count
-            else:
-                if time_end - time_begin > g_handshaketimeout * 5:
-                    dumpstacks()
-                    error = 1
-                    break
-            if time_end - logtime > 60:
-                PRINT("has thread count:%d,ip total cnt:%d" % (Ping.getCount(),queuesize))
-                logtime = time_end
-            count = Ping.getCount()
-        evt_finish.set()
-    except KeyboardInterrupt:
-        PRINT("need wait all thread end...")
-        evt_finish.set()
-    if error == 0:
         for p in threadlist:
             p.join()
-    cacheResult.close()
-
-
-def callsingleprocess(ipqueue,cacheResult,max_threads):
-    PRINT("Start Process")
-    checksingleprocess(ipqueue, cacheResult,max_threads)
-    PRINT("End Process")
-    
-def checkmultiprocess(ipqueue,cacheResult):
-    if ipqueue.qsize() == 0:
-        return
-    processlist = []
-    "如果ip数小于512，只使用一个子进程，否则则使用指定进程数，每个进程处理平均值的数量ip"
-    max_threads = g_maxthreads
-    maxprocess = g_useprocess
-    if ipqueue.qsize() < g_maxthreads:
-        max_threads = ipqueue.qsize()
-        maxprocess = 1
-    else:
-        max_threads = (ipqueue.qsize() + g_useprocess) / g_useprocess
-        if max_threads > g_maxthreads:
-            max_threads = g_maxthreads
-    #multiprocessing.log_to_stderr(logging.DEBUG)
-    for i in xrange(0,maxprocess):
-        p = Process(target=callsingleprocess,args=(ipqueue,cacheResult,max_threads))
-        p.daemon = True
-        processlist.append(p)
-        p.start()
-    
-    try:
-        for p in processlist:
-            p.join()
     except KeyboardInterrupt:
-        PRINT("need wait all process end...")
-        for p in processlist:
-            if p.is_alive():
-                p.terminate()  
-
+        evt_ipramdomend.set()
+    cacheResult.close()
+    
 
 def list_ping():
     if g_useOpenSSL == 1:
         PRINT("support PyOpenSSL")
     if g_usegevent == 1:
         PRINT("support gevent")
-    if g_useprocess > 1:
-        PRINT("support multiprocess")
 
     checkqueue = Queue()
     cacheResult = TCacheResult()
@@ -700,91 +709,11 @@ def list_ping():
     totalcachelen = oklen + errorlen
     if totalcachelen != 0:
         PRINT("load last result,ok cnt:%d,error cnt: %d" % (oklen,errorlen) )
-    "split ip,check ip valid and get ip begin to end"
-    iplineslist = re.split("\r|\n", ip_str_list)
-    skipokcnt = 0
-    skiperrocnt = 0
-    iplinelist = []
-    totalipcnt = 0
-    for iplines in iplineslist:
-        if len(iplines) == 0 or iplines[0] == '#':
-            continue
-        singlelist = []
-        ips = re.split(",|\|", iplines)
-        for line in ips:
-            if len(line) == 0 or line[0] == '#':
-                continue
-            begin, end = splitip(line)
-            if checkipvalid(begin) == 0 or checkipvalid(end) == 0:
-                PRINT("ip format is error,line:%s, begin: %s,end: %s" % (line, begin, end))
-                sys.exit(1)
-            nbegin = from_string(begin)
-            nend = from_string(end)
-            while nbegin <= nend:
-                if totalcachelen != 0:
-                    ip = to_string(nbegin)
-                    if ip in lastokresult:
-                        #PRINT("ip:%s had check ok last" % ip)
-                        skipokcnt += 1
-                    elif ip in lasterrorresult:
-                        #PRINT("ip:%s had check error last" % ip)
-                        skiperrocnt += 1
-                    else:
-                        singlelist.append(nbegin)
-                else:
-                    singlelist.append(nbegin)
-                nbegin += 1
-        if len(singlelist) > 0:
-            random.shuffle(singlelist)
-            iplinelist.append(singlelist)
-            totalipcnt += len(singlelist)
     
-    PRINT("total ip:%d,random ip array:%d" % (totalipcnt,len(iplinelist)))
-
-    global g_ramdomipcnt
-    if g_ramdomipcnt == 0:
-        g_ramdomipcnt = totalipcnt
-    elif g_ramdomipcnt > totalipcnt:
-        g_ramdomipcnt = totalipcnt
-    # 生成随机IP队列
-    randomcnt = 0
-    randomlist = []
-    # 循环从ip组中获取随机个ip(2-5或10个)到一个指定的数组，然后该数组在完成后再次用random.shuffle打乱
-    while randomcnt < g_ramdomipcnt:
-        for itemlist in iplinelist:
-            itemlen = len(itemlist)
-            itemlist_len = itemlen
-            if itemlen == 0:
-                continue
-            if itemlen > 1000:
-                itemlen = 10
-            elif itemlen > 5:
-                itemlen = 5
-            if itemlen > g_ramdomipcnt - randomcnt:
-                itemlen = g_ramdomipcnt - randomcnt
-            if itemlen <= 2:
-                selectcnt = itemlen
-            else:
-                selectcnt = random.randint(2,itemlen)
-            for i in xrange(0,selectcnt):
-                k = random.randint(0,itemlist_len-1-i)
-                randomcnt += 1
-                randomlist.append(itemlist.pop(k))
-            if randomcnt >= g_ramdomipcnt:
-                break
-    
-    random.shuffle(randomlist)
-    for item in randomlist:
-        checkqueue.put(item)
-    
-    if skipokcnt != 0 or skiperrocnt != 0:
-        PRINT("skip ok cnt:%d,skip error cnt: %d" % (skipokcnt,skiperrocnt) )
-
-    if checkqueue.qsize() > 0:
-        if g_useprocess > 1 and checkqueue.qsize() > g_maxthreads:
-            checkmultiprocess(checkqueue,cacheResult)
-        else:
-            checksingleprocess(checkqueue,cacheResult,g_maxthreads)
+    ramdomip_thread = RamdomIP(checkqueue,cacheResult)
+    ramdomip_thread.setDaemon(True)
+    ramdomip_thread.start()
+    checksingleprocess(checkqueue,cacheResult,g_maxthreads)
     
     cacheResult.flushFailIP()
     ip_list = cacheResult.getIPResult()
@@ -798,6 +727,8 @@ def list_ping():
     ncount = 0
     for ip in ip_list:
         domain = ip[2]
+        if ip[0] > g_maxhandletimeout :
+            break        
         PRINT("[%s] %d ms,domain: %s,svr:%s" % (ip[1], ip[0], domain,ip[3]))
         if domain is not None:
             ff.write(ip[1])
