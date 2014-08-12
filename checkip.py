@@ -263,7 +263,7 @@ class TCacheResult(object):
                     gwsname = ""
                     if len(ips) > 3:
                         gwsname = ips[3]
-                    okresult.add(ips[0])
+                    okresult.add(from_string(ips[0]))
                     if checkvalidssldomain(ips[2],gwsname):
                         self.okqueue.put((int(ips[1]),ips[0],ips[2],gwsname))
         if os.path.exists(g_tmperrorfile):
@@ -271,7 +271,7 @@ class TCacheResult(object):
                 for line in fd:
                     ips = line.strip("\r\n").split(" ")
                     for item in ips:
-                        errorresult.add(item)
+                        errorresult.add(from_string(item))
         return okresult,errorresult
     
     def clearFile(self):
@@ -495,11 +495,11 @@ class Ping(threading.Thread):
     def runJob(self):
         while not evt_ipramdomstart.is_set():
             evt_ipramdomstart.wait(5)
-        while not evt_ipramdomend.is_set():
+        while not self.cacheResult.queryfinish():
             try:
-                if self.cacheResult.queryfinish():
+                if self.queue.qsize() == 0 and evt_ipramdomend.is_set():
                     break
-                addrint = self.queue.get(True,5)
+                addrint = self.queue.get(True,2)
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
@@ -569,6 +569,7 @@ class RamdomIP(threading.Thread):
         
         hadIPData = True
         putdata = False
+        putipcnt = 0
         while hadIPData:
             if evt_ipramdomend.is_set():
                 break
@@ -591,24 +592,39 @@ class RamdomIP(threading.Thread):
                     selectcnt = random.randint(2,itemlen)
                 for i in xrange(0,selectcnt):
                     k = random.randint(begin,end)
-                    while k in cacheip and k <= end:
-                        k += 1
-                    if k <= end:
+                    first = True
+                    findOK = True
+                    while k in cacheip:
+                        if k < end:
+                            k += 1
+                        elif not first:
+                            findOK = False
+                            break
+                        else:
+                            first = False
+                            k = begin
+                    if findOK:
                         hadIPData = True
                         self.ipqueue.put(k)
+                        cacheip.add(k)
+                        putipcnt += 1
                         if not putdata:
                             evt_ipramdomstart.set()
                             putdata = True
                     if evt_ipramdomend.is_set():
                         break
                 itemlist[2] -= i + 1
-            sleep(1)
+            if putipcnt >= 500:
+                sleep(1)
+                putipcnt = 0
+        if not evt_ipramdomstart.is_set():
+            evt_ipramdomstart.set()
         
     def run(self):
         PRINT("begin to get ramdom ip")
         self.ramdomip()
         evt_ipramdomend.set()
-        PRINT("ramdom ip thread stopped.")
+        PRINT("ramdom ip thread stopped.ip queue size: %d" % self.ipqueue.qsize())
 
 def from_string(s):
     """Convert dotted IPv4 address to integer."""
