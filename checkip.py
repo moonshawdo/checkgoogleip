@@ -444,16 +444,16 @@ class my_ssl_wrap(object):
             sock.setblocking(0)
             trycnt = 0
             begin = time.time()
-            conntimeout = g_conntimeout if g_usegevent == 0 else 0.001
+            conntimeout = g_conntimeout if g_usegevent == 0 else 0
             while True:
+                end = time.time()
+                costime = int(end-begin)
+                if costime >= g_conntimeout:
+                    PRINT("get http response timeout(%ss),ip:%s,cnt:%d" % (costime,ip,trycnt) )
+                    return ""
                 trycnt += 1
                 infds, outfds, errfds = select.select([sock, ], [], [], conntimeout)
                 if len(infds) == 0:
-                    end = time.time()
-                    costime = int(end-begin)
-                    if costime >= g_conntimeout:
-                        PRINT("get http response timeout(%ss),ip:%s,cnt:%d" % (costime,ip,trycnt) )
-                        return ""
                     if g_usegevent == 1:
                         sleep(0.5)
                     continue
@@ -461,13 +461,7 @@ class my_ssl_wrap(object):
                 try:
                     d = conn.read(1024)
                 except SSLError as e:
-                    end = time.time()
-                    costime = int(end-begin)
-                    if costime >= g_conntimeout:
-                        PRINT("read http response timeout(%ss),ip:%s,cnt:%d" % (costime,ip,trycnt) )
-                        return ""
                     sleep(0.5)
-                    timeout = 1
                     continue
                 data = data + d.replace("\r","")
                 index = data.find("\n\n")
