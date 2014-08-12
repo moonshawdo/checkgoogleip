@@ -444,7 +444,7 @@ class my_ssl_wrap(object):
             sock.setblocking(0)
             trycnt = 0
             begin = time.time()
-            conntimeout = g_conntimeout if g_usegevent == 0 else 0
+            conntimeout = g_conntimeout if g_usegevent == 0 else 0.001
             while True:
                 end = time.time()
                 costime = int(end-begin)
