@@ -64,6 +64,7 @@ ip_str_list为需要查找的IP地址，第一组的格式：
 2.xxx.xxx.xxx.xxx/xx
 3.xxx.xxx.xxx.
 4 xxx.xxx.xxx.xxx
+5 xxx.xxx.xxx.xxx-xxx
 
 组与组之间可以用换行相隔开,第一行中IP段可以用'|'或','
 获取随机IP是每组依次获取随机个数量的，因此一组的IP数越少，越有机会会检查，当然获取随机IP会先排除上次查询失败的IP
@@ -102,6 +103,7 @@ g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
+g_exttraipfile = os.path.join(g_filedir,"extraip.txt")
 
 g_maxthreads = 128
 
@@ -545,6 +547,17 @@ class RamdomIP(threading.Thread):
         iplinelist = []
         totalipcnt = 0
         cacheip = lastokresult | lasterrorresult
+        if os.path.exists(g_exttraipfile):
+            try:
+                fp = open(g_exttraipfile,"r")
+                linecnt = 0
+                for line in fp:
+                    iplineslist.append(line.strip("\r\n"))
+                    linecnt += 1
+                fp.close()
+                PRINT("load extra ip ok,line:%d" % linecnt )
+            except Exception as e:
+                PRINT("load extra ip file error:%s " % str(e) )
         for iplines in iplineslist:
             if len(iplines) == 0 or iplines[0] == '#':
                 continue
@@ -653,6 +666,9 @@ def splitip(strline):
     if "-" in strline:
         "xxx.xxx.xxx.xxx-xxx.xxx.xxx.xxx"
         begin, end = strline.split("-")
+        if 1 <= len(end) <= 3:
+            prefix = begin[0:begin.rfind(".")]
+            end = prefix + "." + end
     elif strline.endswith("."):
         "xxx.xxx.xxx."
         begin = strline + "0"
