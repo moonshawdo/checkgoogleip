@@ -25,7 +25,7 @@ checkgoogleip
 * 默认会尝试使用gevent及内置的ssl库查询，好处：明显优化cpu及内存使用，最大线程数量限制了128条，可以支持pyOpenSSL库，但需要设置g_usegevent为0
 * 默认增加一些IP段检查，并且只随机检查700个IP 
 * 默认会保存测试IP的结果到ip_tmperror.txt（失败）与ip_tmpok.txt（成功），下次运行脚本时会预先读取，并会跳过这些IP的查询，如果不想保留ip_tmperror.txt，则g_autodeltmperrorfile为1，如果不想保留ip_tmpok.txt，则需要设置g_autodeltmpokfile=1，如果程序正常运行结束，则会检查g_autodeltmperrorfile及g_autodeltmpokfile，并执行对应的操作，如果程序运行异常，需要关闭程序，则会保留这两个文件
-* 增加gogotest里面的IP列表，特别感谢该开发者提供的IP列表
+* 增加gogotest里面的部分IP列表，特别感谢该开发者
 
 使用方法
 -------------

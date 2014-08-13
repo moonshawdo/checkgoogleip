@@ -86,6 +86,175 @@ ip_str_list = '''
 64.18.0.0/20
 207.126.144.0/20
 173.194.0.0/16
+1.179.248.0-255
+106.162.192.148-187
+108.166.34.0-255
+118.174.24.0-255
+118.174.25.0-255
+118.174.26.0-255
+118.174.27.0-255
+121.195.178.0-255
+121.78.74.68-123
+123.205.250.0-255
+123.205.251.68-123
+124.160.89.0-255
+130.211.115.0-255
+130.211.76.0-255
+130.211.78.0-255
+130.211.82.0-255
+146.148.16.0-255
+146.148.24.0-255
+146.148.34.0-255
+146.148.8.0-255
+146.148.9.0-255
+173.194.0.0-255
+173.194.1.0-255
+173.194.10.0-255
+173.194.11.0-255
+173.194.12.0-255
+173.194.120.0-255
+173.194.121.0-255
+173.194.122.0-255
+173.194.123.0-255
+173.194.124.0-255
+173.194.125.0-255
+173.194.126.0-255
+173.194.127.0-255
+173.194.128.0-255
+173.194.129.0-255
+173.194.13.0-255
+173.194.130.0-255
+173.194.131.0-255
+173.194.132.0-255
+173.194.133.0-255
+173.194.134.0-255
+173.194.135.0-255
+173.194.136.0-255
+173.194.137.0-255
+173.194.138.0-255
+173.194.139.0-255
+173.194.14.0-255
+173.194.140.0-255
+173.194.141.0-255
+173.194.142.0-255
+173.194.143.0-255
+173.194.162.0-255
+173.194.166.0-255
+173.194.174.0-255
+173.194.193.0-255
+173.194.196.0-255
+173.194.198.0-255
+173.194.201.0-255
+173.194.202.0-255
+173.194.203.0-255
+173.194.205.0-255
+173.194.206.0-255
+173.194.207.0-255
+173.194.208.0-255
+173.194.209.0-255
+173.194.21.0-255
+173.194.212.0-255
+173.194.214.0-255
+173.194.22.0-255
+173.194.220.0-255
+173.194.221.0-255
+173.194.222.0-255
+173.194.223.0-255
+173.194.224.0-255
+173.194.225.0-255
+173.194.226.0-255
+173.194.227.0-255
+173.194.228.0-255
+173.194.229.0-255
+173.194.23.0-255
+173.194.230.0-255
+173.194.231.0-255
+173.194.232.0-255
+173.194.233.0-255
+173.194.234.0-255
+173.194.24.0-255
+173.194.25.0-255
+173.194.26.0-255
+173.194.34.0-255
+173.194.6.0-255
+173.194.64.0-255
+173.194.65.0-255
+173.194.66.0-255
+173.194.67.0-255
+173.194.69.0-255
+173.194.7.0-255
+173.194.70.0-255
+173.194.71.0-255
+173.194.73.0-255
+173.194.74.0-255
+173.194.77.0-255
+173.194.78.0-255
+173.194.79.0-255
+173.194.9.0-255
+178.60.128.1-63
+193.120.166.64-127
+193.92.133.0-63
+194.78.20.16-31
+194.78.99.0-255
+195.249.20.192-255
+202.106.93.0-255
+202.39.143.1-123
+202.69.26.0-255
+203.66.124.129-251
+208.117.224.0-255
+208.117.225.0-255
+208.117.226.0-255
+208.117.227.0-255
+208.117.228.0-255
+208.117.229.0-255
+208.117.230.0-255
+208.117.231.0-255
+208.117.232.0-255
+208.117.236.0-255
+208.117.238.0-255
+208.117.239.0-255
+208.117.240.0-255
+208.117.242.0-255
+208.117.248.0-255
+208.117.250.0-255
+208.117.251.0-255
+208.117.254.0-255
+208.117.255.0-255
+209.85.228.0-255
+210.242.125.20-59
+212.188.15.0-255
+213.186.229.0-63
+213.240.44.0-31
+218.176.242.0-255
+24.156.131.0-255
+41.206.96.0-255
+62.116.207.0-63
+62.197.198.193-251
+64.15.112.0-255
+64.15.113.0-255
+64.15.114.0-255
+64.15.115.0-255
+64.15.117.0-255
+64.15.119.0-255
+64.15.120.0-255
+64.15.124.0-255
+64.15.126.0-255
+64.233.160.0-255
+64.233.168.0-255
+64.233.171.0-255
+66.102.133.0-255
+66.102.136.0-255
+66.102.255.0-255
+80.228.65.128-191
+81.175.29.128-191
+84.235.77.0-255
+85.182.250.0-255
+86.127.118.128-191
+93.183.211.192-255
+93.94.217.0-31
+93.94.218.0-31
+94.200.103.64-71
+94.40.70.0-63
 '''
 
 
@@ -115,9 +284,9 @@ g_ssldomain = ("google.com",)
 g_excludessdomain=()
 
 
-"是否自动删除记录查询成功的IP文件，0为不删除，1为删除"
+"是否自动删除记录查询成功的非google的IP文件，方便下次跳过连接，0为不删除，1为删除"
 "文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名"
-g_autodeltmpokfile = 1
+g_autodeltmpokfile = 0
 "是否自动删除记录查询失败的IP文件，0为不删除，1为删除"
 "ip_tmperror.txt，格式：ip"
 g_autodeltmperrorfile = 0
@@ -265,9 +434,8 @@ class TCacheResult(object):
                     gwsname = ""
                     if len(ips) > 3:
                         gwsname = ips[3]
-                    okresult.add(from_string(ips[0]))
-                    if checkvalidssldomain(ips[2],gwsname):
-                        self.okqueue.put((int(ips[1]),ips[0],ips[2],gwsname))
+                    if not checkvalidssldomain(ips[2],gwsname):
+                        okresult.add(from_string(ips[0]))
         if os.path.exists(g_tmperrorfile):
             with open(g_tmperrorfile,"r") as fd:
                 for line in fd:
@@ -465,11 +633,17 @@ class my_ssl_wrap(object):
                 except SSLError as e:
                     sleep(0.5)
                     continue
+                readlen = len(d)
+                if readlen == 0:
+                    sleep(0.5)
+                    continue
                 data = data + d.replace("\r","")
                 index = data.find("\n\n")
                 if index != -1:
                     gwsname = getgooglesvrnamefromheader(data[0:index])
                     return gwsname
+                elif readlen <= 64:
+                    sleep(0.01)
             return ""
         except Exception as e:
             info = "%s" % e
@@ -572,58 +746,72 @@ class RamdomIP(threading.Thread):
                     continue
                 nbegin = from_string(begin)
                 nend = from_string(end)
-                iplinelist.append([nbegin,nend,nend - nbegin + 1])
+                iplinelist.append([nbegin,nend])
         
         hadIPData = True
         putdata = False
-        putipcnt = 0
         while hadIPData:
             if evt_ipramdomend.is_set():
                 break
             hadIPData = False
+            index = -1
+            emptyindexlist=[]
+            #PRINT("ramdom ip array: % d" % len(iplinelist))
             for itemlist in iplinelist:
                 begin = itemlist[0]
                 end = itemlist[1]
-                itemlen = itemlist[2]
+                itemlen = end - begin + 1
+                index += 1
                 if itemlen <= 0:
                     continue
                 if self.cacheResult.queryfinish():
                     break
-                if itemlen > 1000:
+                '''if itemlen > 1000:
                     itemlen = 10
                 elif itemlen > 5:
                     itemlen = 5
+                '''
                 if itemlen <= 2:
                     selectcnt = itemlen
                 else:
-                    selectcnt = random.randint(2,itemlen)
+                    selectcnt = 2
                 for i in xrange(0,selectcnt):
                     k = random.randint(begin,end)
                     first = True
                     findOK = True
+                    checkcnt = 0
+                    checkend = k
+                    # try get next index in circle
                     while k in cacheip:
+                        checkcnt += 1
                         if k < end:
                             k += 1
-                        elif not first:
+                        else:
+                            k = begin
+                        # if met itself,nee break
+                        if k == checkend :
                             findOK = False
                             break
-                        else:
-                            first = False
-                            k = begin
+                    #if checkcnt > 1:
+                    #    PRINT("[%d]total cnt: %d,index:%d,ramdom checkcnt:%d,found:%d" % (index,itemlen,checkend-begin,checkcnt,findOK))
                     if findOK:
                         hadIPData = True
                         self.ipqueue.put(k)
                         cacheip.add(k)
-                        putipcnt += 1
                         if not putdata:
                             evt_ipramdomstart.set()
                             putdata = True
                     if evt_ipramdomend.is_set():
                         break
-                itemlist[2] -= i + 1
-            if putipcnt >= 500:
+                    # not found,no need to ramdom next index
+                    if not findOK:
+                        emptyindexlist.insert(0,index)
+                        break
+            if self.ipqueue.qsize() >= 500:
                 sleep(1)
-                putipcnt = 0
+            for empytindex in emptyindexlist:
+                iplinelist.pop(empytindex)
+                #PRINT("remote index: %d" % empytindex )
         if not evt_ipramdomstart.is_set():
             evt_ipramdomstart.set()
         
