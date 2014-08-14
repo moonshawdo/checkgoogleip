@@ -246,28 +246,30 @@ def getgooglesvrnamefromheader(header):
     return ""
 
 class TCacheResult(object):
-    __slots__ = ["okqueue","failipqueue","oklock","errlock","okfile","errorfile","validipcnt"]
+    __slots__ = ["oklist","failiplist","oklock","errlock","okfile","errorfile","validipcnt","filegwsipset"]
     def __init__(self):
-        self.okqueue = Queue()
-        self.failipqueue = Queue()
+        self.oklist = list()
+        self.failiplist = list()
         self.oklock = threading.Lock()
         self.errlock = threading.Lock()
         self.okfile = None
         self.errorfile = None
         self.validipcnt = 0
+        self.filegwsipset = set()
     
     def addOKIP(self,costtime,ip,ssldomain,gwsname):
         bOK = False
-        if checkvalidssldomain(ssldomain,gwsname):
-            bOK = True
-            self.okqueue.put((costtime,ip,ssldomain,gwsname))
         try:
             self.oklock.acquire()
-            if self.okfile is None:
-                self.okfile = open(g_tmpokfile,"a+",0)
-            self.okfile.seek(0,2)
-            line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
-            self.okfile.write(line)
+            if checkvalidssldomain(ssldomain,gwsname):
+                bOK = True
+                self.oklist.append((costtime,ip,ssldomain,gwsname))
+            if ip not in self.filegwsipset:
+                if self.okfile is None:
+                    self.okfile = open(g_tmpokfile,"a+",0)
+                self.okfile.seek(0,2)
+                line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
+                self.okfile.write(line)
             if bOK and costtime <= g_maxhandletimeout:
                 self.validipcnt += 1
                 return self.validipcnt
@@ -283,8 +285,8 @@ class TCacheResult(object):
                 self.errorfile = open(g_tmperrorfile,"a+",0)
             self.errorfile.seek(0,2)
             self.errorfile.write(ip+"\n")
-            self.failipqueue.put(ip)
-            if self.failipqueue.qsize() > 128:
+            self.failiplist.append(ip)
+            if len(self.failiplist) > 128:
                 self.flushFailIP()
         finally:
             self.errlock.release() 
@@ -298,36 +300,13 @@ class TCacheResult(object):
             self.errorfile = None
        
     def getIPResult(self):
-        return self._queuetolist(self.okqueue)
-        
-    def _queuetolist(self,myqueue):
-        result = []
-        try:
-            qsize = myqueue.qsize()
-            while qsize > 0:
-                result.append(myqueue.get_nowait())
-                myqueue.task_done()
-                qsize -= 1
-        except Empty:
-            pass
-        return result
-
-    def _cleanqueue(self,myqueue):
-        try:
-            qsize = myqueue.qsize()
-            while qsize > 0:
-                myqueue.get_nowait()
-                myqueue.task_done()
-                qsize -= 1
-        except Empty:
-            pass
+        return self.oklist
     
     def flushFailIP(self):
-        if self.failipqueue.qsize() > 0 :
-            qsize = self.failipqueue.qsize()
-            self._cleanqueue(self.failipqueue)
-            logging.info( str(qsize) + " ip timeout")
-
+        nLen = len(self.failiplist)
+        if nLen > 0 :
+            self.failiplist = list()
+            PRINT( "%d ip timeout" % nLen )
 
     def loadLastResult(self):
         okresult  = set()
@@ -341,8 +320,15 @@ class TCacheResult(object):
                     gwsname = ""
                     if len(ips) > 3:
                         gwsname = ips[3]
+                    ipint = from_string(ips[0])
                     if not checkvalidssldomain(ips[2],gwsname):
-                        okresult.add(from_string(ips[0]))
+                        okresult.add(ipint)
+                        if ips[0] in self.filegwsipset:
+                            self.filegwsipset.remove(ips[0])
+                    else:
+                        self.filegwsipset.add(ips[0])
+                        if ipint in okresult:
+                            okresult.remove(ipint)
         if os.path.exists(g_tmperrorfile):
             with open(g_tmperrorfile,"r") as fd:
                 for line in fd:
