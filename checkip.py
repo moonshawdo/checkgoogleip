@@ -166,7 +166,7 @@ ip_str_list = '''
 
 
 #最大IP延时，单位毫秒
-g_maxhandletimeout = 2000
+g_maxhandletimeout = 1800
 #最大可用IP数量
 g_maxhandleipcnt = 50
 
@@ -181,7 +181,7 @@ g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
 g_exttraipfile = os.path.join(g_filedir,"extraip.txt")
 
-g_maxthreads = 128
+g_maxthreads = 90
 
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
@@ -272,9 +272,9 @@ class TCacheResult(object):
                 self.okfile.write(line)
             if bOK and costtime <= g_maxhandletimeout:
                 self.validipcnt += 1
-                return self.validipcnt
+                return bOK,self.validipcnt
             else:
-                return 0
+                return bOK,0
         finally:
             self.oklock.release()
             
@@ -411,8 +411,8 @@ class my_ssl_wrap(object):
                                 pass
                     except OpenSSL.SSL.SysCallError as e:
                         raise SSLError(e.args)
-                cert = c.get_peer_certificate()
                 time_end = time.time()
+                cert = c.get_peer_certificate()
                 costtime = int(time_end * 1000 - time_begin * 1000)
                 for subject in cert.get_subject().get_components():
                     if subject[0] == "CN":
@@ -421,13 +421,14 @@ class my_ssl_wrap(object):
                 if domain is None:
                     PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
                 #尝试发送http请求，获取回应头部的Server字段
-                if domain is None or isgoolgledomain(domain) == 2:
+                #if domain is None or isgoolgledomain(domain) == 2:
+                if True:
                     cur_time = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
-                        domain="defaultgws"
+                        domain = "null"
                 return domain, costtime,timeout,gwsname
             else:
                 s.settimeout(g_conntimeout)
@@ -437,8 +438,8 @@ class my_ssl_wrap(object):
                 c.connect((ip, 443))
                 c.settimeout(g_handshaketimeout)
                 c.do_handshake()
-                cert = c.getpeercert()
                 time_end = time.time()
+                cert = c.getpeercert()
                 costtime = int(time_end * 1000 - time_begin * 1000)
                 if 'subject' in cert:
                     subjectitems = cert['subject']
@@ -453,13 +454,14 @@ class my_ssl_wrap(object):
                     if domain is None:
                         PRINT("%s can not get commonName: %s " % (ip, subjectitems))
                 #尝试发送http请求，获取回应头部的Server字段
-                if domain is None or isgoolgledomain(domain) == 2:
+                #if domain is None or isgoolgledomain(domain) == 2:
+                if True:
                     cur_time = time.time()
                     gwsname = self.getgooglesvrname(c,s,ip)
                     time_end = time.time()
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
-                        domain="defaultgws"
+                        domain = "null"
                 return domain, costtime,timeout,gwsname
         except SSLError as e:
             time_end = time.time()
@@ -568,9 +570,11 @@ class Ping(threading.Thread):
                 ssl_obj = my_ssl_wrap()
                 (ssldomain, costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
-                    cnt = self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
+                    gwsip,cnt = self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
                     if cnt != 0:
                         PRINT("ip: %s,CN: %s,svr: %s,ok:1,cnt:%d" % (ipaddr, ssldomain,gwsname,cnt))
+                    elif gwsip:
+                        PRINT("ip: %s,CN: %s,svr: %s,t:%dms,ok:0" % (ipaddr, ssldomain,gwsname,costtime))
                     else:
                         PRINT("ip: %s,CN: %s,svr: %s,ok:0" % (ipaddr, ssldomain,gwsname))
                 elif ssldomain is None:
