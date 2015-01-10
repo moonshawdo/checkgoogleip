@@ -39,7 +39,7 @@ g_usegevent = 1
 if g_usegevent == 1:
     try:
         from gevent import monkey
-        monkey.patch_all(Event=True)
+        monkey.patch_all()
         g_useOpenSSL = 0
         from gevent import sleep
     except ImportError:
@@ -842,8 +842,9 @@ def list_ping():
             break        
         PRINT("[%s] %d ms,domain: %s,svr:%s" % (ip[1], ip[0], domain,ip[3]))
         if domain is not None:
+            if ncount != 0:
+                ff.write("|")
             ff.write(ip[1])
-            ff.write("|")
             ncount += 1
     PRINT("write to file %s ok,count:%d " % (g_ipfile, ncount))
     ff.close()
