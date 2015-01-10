@@ -16,6 +16,8 @@ import select
 import traceback
 import logging
 import random
+from operator import itemgetter
+import shutil
 
 PY3 = False
 if sys.version_info[0] == 3:
@@ -56,6 +58,46 @@ if g_useOpenSSL == 1:
         SSLError = ssl.SSLError
 else:
     SSLError = ssl.SSLError
+    
+
+#最大IP延时，单位毫秒
+g_maxhandletimeout = 1300
+#最大可用IP数量
+g_maxhandleipcnt = 50
+#检查IP的线程数
+g_maxthreads = 90
+#是否立即检查上一次的google ip列表
+g_checklastgoogleipfirst = 1
+#结束时是否需要对ip_tmpok.txt里面的结果进行排序
+g_needsorttmpokfile = 1
+
+"连接超时设置"
+g_conntimeout = 5
+g_handshaketimeout = 7
+
+g_filedir = os.path.dirname(__file__)
+g_cacertfile = os.path.join(g_filedir, "cacert.pem")
+g_ipfile = os.path.join(g_filedir, "ip.txt")
+g_tmpnofile = os.path.join(g_filedir, "ip_tmpno.txt")
+g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
+g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
+g_googleipfile = os.path.join(g_filedir,"googleip.txt")
+
+
+# gevent socket cnt must less than 1024
+if g_usegevent == 1 and g_maxthreads > 1000:
+    g_maxthreads = 128
+
+g_ssldomain = ("google.com",)
+g_excludessdomain=()
+
+
+"是否自动删除记录查询成功的非google的IP文件，方便下次跳过连接，0为不删除，1为删除"
+"文件名：ip_tmpno.txt，格式：ip 连接与握手时间 ssl域名"
+g_autodeltmpnofile = 0
+"是否自动删除记录查询失败的IP文件，0为不删除，1为删除"
+"ip_tmperror.txt，格式：ip"
+g_autodeltmperrorfile = 0
     
 if g_usegevent == 1:
     # Re-add sslwrap to Python 2.7.9
@@ -191,40 +233,7 @@ ip_str_list = '''
 '''
 
 
-#最大IP延时，单位毫秒
-g_maxhandletimeout = 1300
-#最大可用IP数量
-g_maxhandleipcnt = 50
-#检查IP的线程数
-g_maxthreads = 90
 
-"连接超时设置"
-g_conntimeout = 5
-g_handshaketimeout = 7
-
-g_filedir = os.path.dirname(__file__)
-g_cacertfile = os.path.join(g_filedir, "cacert.pem")
-g_ipfile = os.path.join(g_filedir, "ip.txt")
-g_tmpnofile = os.path.join(g_filedir, "ip_tmpno.txt")
-g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
-g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
-g_googleipfile = os.path.join(g_filedir,"googleip.txt")
-
-
-# gevent socket cnt must less than 1024
-if g_usegevent == 1 and g_maxthreads > 1000:
-    g_maxthreads = 128
-
-g_ssldomain = ("google.com",)
-g_excludessdomain=()
-
-
-"是否自动删除记录查询成功的非google的IP文件，方便下次跳过连接，0为不删除，1为删除"
-"文件名：ip_tmpok.txt，格式：ip 连接与握手时间 ssl域名"
-g_autodeltmpokfile = 0
-"是否自动删除记录查询失败的IP文件，0为不删除，1为删除"
-"ip_tmperror.txt，格式：ip"
-g_autodeltmperrorfile = 0
 
 logging.basicConfig(format="[%(threadName)s]%(message)s",level=logging.INFO)
 
@@ -299,7 +308,7 @@ class TCacheResult(object):
                 self.notfile.seek(0,2)
                 line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
                 self.notfile.write(line)
-            elif ip not in self.filegwsipset:
+            else:
                 if self.okfile is None:
                     self.okfile = open(g_tmpokfile,"a+",0)
                 self.okfile.seek(0,2)
@@ -316,6 +325,9 @@ class TCacheResult(object):
     def addFailIP(self,ip):
         try:
             self.errlock.acquire()
+            #如果之前是google ip,不需要记录到失败文件，下次启动可以继续尝试该 ip
+            if ip in self.filegwsipset:
+                return
             if self.errorfile is None:
                 self.errorfile = open(g_tmperrorfile,"a+",0)
             self.errorfile.seek(0,2)
@@ -327,12 +339,13 @@ class TCacheResult(object):
             self.errlock.release() 
     
     def close(self):
-        if self.okfile:
-            self.okfile.close()
-            self.okfile = None
-        if self.errorfile:
-            self.errorfile.close()
-            self.errorfile = None
+        def closefile(fileobj):
+            if fileobj:
+                fileobj.close()
+                fileobj = None
+        closefile(self.okfile)
+        closefile(self.notfile)
+        closefile(self.errorfile)
        
     def getIPResult(self):
         return self.oklist
@@ -346,6 +359,12 @@ class TCacheResult(object):
     def loadLastResult(self):
         okresult  = set()
         errorresult = set()
+        if os.path.exists(g_tmpnofile):
+            with open(g_tmpnofile,"r") as fd:
+                for line in fd:
+                    ips = line.strip("\r\n").split(" ")
+                    ipint = from_string(ips[0])
+                    okresult.add(ipint)
         if os.path.exists(g_tmpokfile):
             with open(g_tmpokfile,"r") as fd:
                 for line in fd:
@@ -359,8 +378,6 @@ class TCacheResult(object):
                     # 如果为google ip,每次都需要检查，如果不是，则跳过检查
                     if not checkvalidssldomain(ips[2],gwsname):
                         okresult.add(ipint)
-                        if ips[0] in self.filegwsipset:
-                            self.filegwsipset.remove(ips[0])
                     else:
                         self.filegwsipset.add(ips[0])
                         if ipint in okresult:
@@ -375,8 +392,8 @@ class TCacheResult(object):
     
     def clearFile(self):
         self.close()
-        if g_autodeltmpokfile and os.path.exists(g_tmpokfile):
-            os.remove(g_tmpokfile)
+        if g_autodeltmpnofile and os.path.exists(g_tmpnofile):
+            os.remove(g_tmpnofile)
             PRINT("remove file %s" % g_tmpokfile)
         if g_autodeltmperrorfile and os.path.exists(g_tmperrorfile):
             os.remove(g_tmperrorfile)
@@ -550,7 +567,7 @@ class my_ssl_wrap(object):
                 end = time.time()
                 costime = int(end-begin)
                 if costime >= g_conntimeout:
-                    PRINT("get http response timeout(%ss),ip:%s,cnt:%d" % (costime,ip,trycnt) )
+                    PRINT("get http response timeout(%ss),ip:%s,try:%d" % (costime,ip,trycnt) )
                     return ""
                 trycnt += 1
                 infds, outfds, errfds = select.select([sock, ], [], [], conntimeout)
@@ -612,7 +629,7 @@ class Ping(threading.Thread):
                     elif gwsip:
                         PRINT("ip: %s,CN: %s,svr: %s,t:%dms,ok:0" % (ipaddr, ssldomain,gwsname,costtime))
                     else:
-                        PRINT("ip: %s,CN: %s,svr: %s,ok:0" % (ipaddr, ssldomain,gwsname))
+                        PRINT("ip: %s,CN: %s,svr: %s,not google" % (ipaddr, ssldomain,gwsname))
                 elif ssldomain is None:
                     self.cacheResult.addFailIP(ipaddr)
             except Empty:
@@ -690,6 +707,18 @@ class RamdomIP(threading.Thread):
                 nend = from_string(end)
                 iplinelist.append([nbegin,nend])
         
+        if g_checklastgoogleipfirst:
+            num = 0
+            for ip in self.cacheResult.filegwsipset:
+                ip_int = from_string(ip)
+                self.ipqueue.put(ip_int)
+                cacheip.add(ip_int)
+                num += 1
+            if num:
+                self.hadaddipcnt += num
+                PRINT("load last google ip cnt: %d" % num)
+                evt_ipramdomstart.set()
+                
         hadIPData = True
         putdata = False
         while hadIPData:
@@ -850,6 +879,43 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
     cacheResult.close()
     
 
+def sort_tmpokfile():
+    if os.path.exists(g_tmpokfile):
+        cacheip = set()
+        ipdict = dict()
+        tmpfile = g_tmpokfile + ".tmp"
+        bsortok = False
+        needsortip = False
+        lastcostime = 0
+        with open(g_tmpokfile,"r") as fd:
+            for line in fd:
+                ips = line.strip("\r\n").split(" ")
+                if len(ips) < 3:
+                    continue
+                ipint = from_string(ips[0])
+                costime = int(ips[1])
+                if lastcostime > costime:
+                    needsortip = True
+                lastcostime = costime
+                if costime not in ipdict:
+                    ipdict[costime] = []
+                ipdict[costime].append((ipint,line))
+            if needsortip:
+                iplist = sorted(ipdict.iteritems(),key = itemgetter(0))
+                with open(tmpfile,"w") as wfd:
+                    for item in iplist:
+                        for ips in item[1]:
+                            if ips[0] not in cacheip:
+                                wfd.write(ips[1])
+                                cacheip.add(ips[0])
+                                bsortok = True
+        if bsortok:
+            shutil.move(tmpfile,g_tmpokfile)
+            PRINT("sort %s file ok" % g_tmpokfile)
+        else:
+            PRINT("file %s no need sort" % g_tmpokfile)
+
+
 def list_ping():
     if g_useOpenSSL == 1:
         PRINT("support PyOpenSSL")
@@ -893,6 +959,8 @@ def list_ping():
     PRINT("write to file %s ok,count:%d " % (g_ipfile, ncount))
     ff.close()
     cacheResult.clearFile()
+    if g_needsorttmpokfile:
+        sort_tmpokfile()
 
 
 if __name__ == '__main__':
