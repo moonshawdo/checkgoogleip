@@ -61,11 +61,11 @@ else:
     
 
 #最大IP延时，单位毫秒
-g_maxhandletimeout = 1300
+g_maxhandletimeout = 1500
 #最大可用IP数量
 g_maxhandleipcnt = 50
 #检查IP的线程数
-g_maxthreads = 90
+g_maxthreads = 60
 #是否立即检查上一次的google ip列表
 g_checklastgoogleipfirst = 1
 #结束时是否需要对ip_tmpok.txt里面的结果进行排序
@@ -282,8 +282,15 @@ def getgooglesvrnamefromheader(header):
         return gws
     return ""
 
+g_NAtimeout = 1000000
+def getcosttime(costtime):
+    if costtime.startswith("NA_"):
+        return g_NAtimeout
+    else:
+        return int(costtime)
+
 class TCacheResult(object):
-    __slots__ = ["oklist","failiplist","oklock","errlock","okfile","errorfile","notfile","validipcnt","filegwsipset"]
+    __slots__ = ["oklist","failiplist","oklock","errlock","okfile","errorfile","notfile","validipcnt","filegwsipset","okfilelinecnt"]
     def __init__(self):
         self.oklist = list()
         self.failiplist = list()
@@ -294,6 +301,7 @@ class TCacheResult(object):
         self.notfile = None
         self.validipcnt = 0
         self.filegwsipset = set()
+        self.okfilelinecnt = 0
     
     def addOKIP(self,costtime,ip,ssldomain,gwsname):
         bOK = False
@@ -326,12 +334,11 @@ class TCacheResult(object):
         try:
             self.errlock.acquire()
             #如果之前是google ip,不需要记录到失败文件，下次启动可以继续尝试该 ip
-            if ip in self.filegwsipset:
-                return
-            if self.errorfile is None:
-                self.errorfile = open(g_tmperrorfile,"a+",0)
-            self.errorfile.seek(0,2)
-            self.errorfile.write(ip+"\n")
+            if ip not in self.filegwsipset:
+                if self.errorfile is None:
+                    self.errorfile = open(g_tmperrorfile,"a+",0)
+                self.errorfile.seek(0,2)
+                self.errorfile.write(ip+"\n")
             self.failiplist.append(ip)
             if len(self.failiplist) > 128:
                 self.flushFailIP()
@@ -367,7 +374,9 @@ class TCacheResult(object):
                     okresult.add(ipint)
         if os.path.exists(g_tmpokfile):
             with open(g_tmpokfile,"r") as fd:
+                self.okfilelinecnt = 0
                 for line in fd:
+                    self.okfilelinecnt += 1
                     ips = line.strip("\r\n").split(" ")
                     if len(ips) < 3:
                         continue
@@ -658,31 +667,31 @@ class Ping(threading.Thread):
             
             
 class RamdomIP(threading.Thread):
-    def __init__(self,checkqueue,cacheResult):
+    def __init__(self,checkqueue,cacheResult,cacheip):
         threading.Thread.__init__(self)
         self.ipqueue = checkqueue
         self.cacheResult = cacheResult
         self.hadaddipcnt = 0
+        self.cacheip = cacheip
         
     def ramdomip(self):
-        lastokresult,lasterrorresult = self.cacheResult.loadLastResult()
         iplineslist = []
         skipokcnt = 0
         skiperrocnt = 0
         iplinelist = []
         totalipcnt = 0
-        cacheip = lastokresult | lasterrorresult
         loaddefaultip = False
         if os.path.exists(g_googleipfile):
             try:
                 fp = open(g_googleipfile,"r")
                 linecnt = 0
                 for line in fp:
-                    if line == 'default':
-                        iplineslist.extend(re.split("\r|\n", ip_str_list))
+                    data = line.strip("\r\n")
+                    if data == '@default':
+                        iplineslist.extend(re.split("\r|\n", ip_str_list.strip("\r\n")))
                         loaddefaultip = True
                     else:
-                        iplineslist.append(line.strip("\r\n"))
+                        iplineslist.append(data)
                         linecnt += 1
                 fp.close()
                 PRINT("load extra ip ok,line:%d,load default ip: %d" % (linecnt,loaddefaultip))
@@ -690,7 +699,7 @@ class RamdomIP(threading.Thread):
                 PRINT("load extra ip file error:%s " % str(e) )
                 sys.exit(1)
         else:
-            iplineslist.extend(re.split("\r|\n", ip_str_list))
+            iplineslist.extend(re.split("\r|\n", ip_str_list.strip("\r\n")))
         for iplines in iplineslist:
             if len(iplines) == 0 or iplines[0] == '#':
                 continue
@@ -712,7 +721,7 @@ class RamdomIP(threading.Thread):
             for ip in self.cacheResult.filegwsipset:
                 ip_int = from_string(ip)
                 self.ipqueue.put(ip_int)
-                cacheip.add(ip_int)
+                self.cacheip.add(ip_int)
                 num += 1
             if num:
                 self.hadaddipcnt += num
@@ -750,7 +759,7 @@ class RamdomIP(threading.Thread):
                     checkcnt = 0
                     checkend = k
                     # try get next index in circle
-                    while k in cacheip:
+                    while k in self.cacheip:
                         checkcnt += 1
                         if k < end:
                             k += 1
@@ -765,7 +774,7 @@ class RamdomIP(threading.Thread):
                     if findOK:
                         hadIPData = True
                         self.ipqueue.put(k)
-                        cacheip.add(k)
+                        self.cacheip.add(k)
                         self.hadaddipcnt += 1
                         if not putdata:
                             evt_ipramdomstart.set()
@@ -788,6 +797,7 @@ class RamdomIP(threading.Thread):
         PRINT("begin to get ramdom ip")
         self.ramdomip()
         evt_ipramdomend.set()
+        self.cacheip.clear()
         qsize = self.ipqueue.qsize()
         PRINT("ramdom ip thread stopped.had check ip: %d,rest ip queue size: %d" % (self.hadaddipcnt - qsize,qsize))
 
@@ -879,36 +889,42 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
     cacheResult.close()
     
 
-def sort_tmpokfile():
+def sort_tmpokfile(nLastOKFileLineCnt):
     if os.path.exists(g_tmpokfile):
-        cacheip = set()
         ipdict = dict()
         tmpfile = g_tmpokfile + ".tmp"
         bsortok = False
         needsortip = False
         lastcostime = 0
+        ncurline = 0
         with open(g_tmpokfile,"r") as fd:
             for line in fd:
+                ncurline += 1
                 ips = line.strip("\r\n").split(" ")
                 if len(ips) < 3:
                     continue
                 ipint = from_string(ips[0])
-                costime = int(ips[1])
-                if lastcostime > costime:
-                    needsortip = True
+                # 把当次查询出来的IP放在最前面，因为有一些IP可能上一次的时间少，并且这次又没有查询出来，应该排在新IP后面
+                oldIP = True if ncurline <= nLastOKFileLineCnt else False
+                if oldIP == True:
+                    costime = g_NAtimeout + ncurline
+                else:
+                    costime = int(ips[1])
+                    if lastcostime > costime:
+                        needsortip = True 
                 lastcostime = costime
-                if costime not in ipdict:
-                    ipdict[costime] = []
-                ipdict[costime].append((ipint,line))
+                ipdict[ipint] = (costime,ips)
             if needsortip:
-                iplist = sorted(ipdict.iteritems(),key = itemgetter(0))
+                iplist = sorted(ipdict.iteritems(),key = itemgetter(1))
                 with open(tmpfile,"w") as wfd:
                     for item in iplist:
-                        for ips in item[1]:
-                            if ips[0] not in cacheip:
-                                wfd.write(ips[1])
-                                cacheip.add(ips[0])
-                                bsortok = True
+                        costime = item[1][0]
+                        ips = item[1][1]
+                        if costime >= g_NAtimeout and ips[1][0] != 'N':
+                            ips[1] = "NA_" + ips[1]
+                        wfd.write(" ".join(ips))
+                        wfd.write("\n")
+                        bsortok = True
         if bsortok:
             shutil.move(tmpfile,g_tmpokfile)
             PRINT("sort %s file ok" % g_tmpokfile)
@@ -929,12 +945,15 @@ def list_ping():
     errorlen = len(lasterrorresult)
     totalcachelen = oklen + errorlen
     if totalcachelen != 0:
-        PRINT("load last result,ok cnt:%d,error cnt: %d" % (oklen,errorlen) )
+        PRINT("load last result,ok cnt:%d,ok file line:%d,error cnt: %d" % (oklen,cacheResult.okfilelinecnt,errorlen) )
     
-    ramdomip_thread = RamdomIP(checkqueue,cacheResult)
+    ramdomip_thread = RamdomIP(checkqueue,cacheResult,lastokresult|lasterrorresult)
     ramdomip_thread.setDaemon(True)
     ramdomip_thread.start()
     checksingleprocess(checkqueue,cacheResult,g_maxthreads)
+    
+    lastokresult.clear()
+    lasterrorresult.clear()
     
     cacheResult.flushFailIP()
     ip_list = cacheResult.getIPResult()
@@ -958,9 +977,10 @@ def list_ping():
             ncount += 1
     PRINT("write to file %s ok,count:%d " % (g_ipfile, ncount))
     ff.close()
+    nLastOKFileLineCnt = cacheResult.okfilelinecnt
     cacheResult.clearFile()
     if g_needsorttmpokfile:
-        sort_tmpokfile()
+        sort_tmpokfile(nLastOKFileLineCnt)
 
 
 if __name__ == '__main__':

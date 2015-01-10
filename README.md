@@ -24,8 +24,13 @@ checkgoogleip
 * connect超时时间可以看g_commtimeout变量，时间为5秒，握手超时请看g_handshaketimeout，时间为7秒
 * 默认会尝试使用gevent及内置的ssl库查询，好处：明显优化cpu及内存使用，最大线程数量限制了128条，可以支持pyOpenSSL库，但需要设置g_usegevent为0
 * 默认增加一些IP段检查，并且只随机检查700个IP 
-* 默认会保存测试IP的结果到ip_tmperror.txt（失败）与ip_tmpok.txt（成功），下次运行脚本时会预先读取，并会跳过这些IP的查询，如果不想保留ip_tmperror.txt，则g_autodeltmperrorfile为1，如果不想保留ip_tmpok.txt，则需要设置g_autodeltmpokfile=1，如果程序正常运行结束，则会检查g_autodeltmperrorfile及g_autodeltmpokfile，并执行对应的操作，如果程序运行异常，需要关闭程序，则会保留这两个文件
+* 默认会保存测试IP的结果到ip_tmperror.txt（失败）、ip_tmpno.txt(非gae可用IP），ip_tmpok.txt（gae可用IP），下次运行脚本时会预先读取，并会跳过ip_tmperror.txt与ip_tmpno.txt的查询，如果不想保留ip_tmperror.txt，则g_autodeltmperrorfile为1，如果不想保留ip_tmpno.txt，则需要设置g_autodeltmpnofile=1，如果程序正常运行结束，则会检查g_autodeltmperrorfile及g_autodeltmpnofile，并执行对应的操作，如果程序运行异常，需要关闭程序，则会保留这两个文件
 * 增加gogotest里面的部分IP列表，特别感谢该开发者
+* 程序在启动时会优先读取ip_tmpok.txt检查，如果不想优先检查，可以设置g_checklastgoogleipfirst为0
+* 程序在正常结束时会对ip_tmpok.txt的结果进行排序，当次没有检查到的IP时排在最后，第二列是时间值，以NA_开头（表示当次查询超时或没检查到），如果不想对文件排序，可以设置
+g_needsorttmpokfile为0
+* 设置默认线程为60(g_maxthreads),默认最大IP延时1500毫秒（g_maxhandletimeout），默认检查可用IP数50(g_maxhandleipcnt)
+* 程序支持优先读取外部IP列表，文件名为googleip.txt,当这个文件存在时，默认不会读取脚本里面的IP列表，如果需要检查里面的IP列表，可以在新一行中填写@default，表示读取脚本预设IP列表
 
 使用方法
 -------------
