@@ -56,6 +56,32 @@ if g_useOpenSSL == 1:
         SSLError = ssl.SSLError
 else:
     SSLError = ssl.SSLError
+    
+if g_usegevent == 1:
+    # Re-add sslwrap to Python 2.7.9
+    import inspect
+    __ssl__ = __import__('ssl')
+    
+    try:
+        _ssl = __ssl__._ssl
+    except AttributeError:
+        _ssl = __ssl__._ssl2
+        
+    def new_sslwrap(sock, server_side=False, keyfile=None, certfile=None, cert_reqs=__ssl__.CERT_NONE, ssl_version=__ssl__.PROTOCOL_SSLv23, ca_certs=None, ciphers=None):
+        context = __ssl__.SSLContext(ssl_version)
+        context.verify_mode = cert_reqs or __ssl__.CERT_NONE
+        if ca_certs:
+            context.load_verify_locations(ca_certs)
+        if certfile:
+            context.load_cert_chain(certfile, keyfile)
+        if ciphers:
+            context.set_ciphers(ciphers)
+            
+        caller_self = inspect.currentframe().f_back.f_locals['self']
+        return context._wrap_socket(sock, server_side=server_side, ssl_sock=caller_self)
+    
+    if not hasattr(_ssl, 'sslwrap'):
+        _ssl.sslwrap = new_sslwrap
 
 
 """
@@ -166,9 +192,11 @@ ip_str_list = '''
 
 
 #最大IP延时，单位毫秒
-g_maxhandletimeout = 1800
+g_maxhandletimeout = 1300
 #最大可用IP数量
 g_maxhandleipcnt = 50
+#检查IP的线程数
+g_maxthreads = 90
 
 "连接超时设置"
 g_conntimeout = 5
@@ -177,11 +205,11 @@ g_handshaketimeout = 7
 g_filedir = os.path.dirname(__file__)
 g_cacertfile = os.path.join(g_filedir, "cacert.pem")
 g_ipfile = os.path.join(g_filedir, "ip.txt")
+g_tmpnofile = os.path.join(g_filedir, "ip_tmpno.txt")
 g_tmpokfile = os.path.join(g_filedir, "ip_tmpok.txt")
 g_tmperrorfile = os.path.join(g_filedir, "ip_tmperror.txt")
-g_exttraipfile = os.path.join(g_filedir,"extraip.txt")
+g_googleipfile = os.path.join(g_filedir,"googleip.txt")
 
-g_maxthreads = 90
 
 # gevent socket cnt must less than 1024
 if g_usegevent == 1 and g_maxthreads > 1000:
@@ -246,7 +274,7 @@ def getgooglesvrnamefromheader(header):
     return ""
 
 class TCacheResult(object):
-    __slots__ = ["oklist","failiplist","oklock","errlock","okfile","errorfile","validipcnt","filegwsipset"]
+    __slots__ = ["oklist","failiplist","oklock","errlock","okfile","errorfile","notfile","validipcnt","filegwsipset"]
     def __init__(self):
         self.oklist = list()
         self.failiplist = list()
@@ -254,6 +282,7 @@ class TCacheResult(object):
         self.errlock = threading.Lock()
         self.okfile = None
         self.errorfile = None
+        self.notfile = None
         self.validipcnt = 0
         self.filegwsipset = set()
     
@@ -264,7 +293,13 @@ class TCacheResult(object):
             if checkvalidssldomain(ssldomain,gwsname):
                 bOK = True
                 self.oklist.append((costtime,ip,ssldomain,gwsname))
-            if ip not in self.filegwsipset:
+            if not bOK:
+                if self.notfile is None:
+                    self.notfile = open(g_tmpnofile,"a+",0)
+                self.notfile.seek(0,2)
+                line = "%s %d %s %s\n" % (ip, costtime, ssldomain,gwsname)
+                self.notfile.write(line)
+            elif ip not in self.filegwsipset:
                 if self.okfile is None:
                     self.okfile = open(g_tmpokfile,"a+",0)
                 self.okfile.seek(0,2)
@@ -321,6 +356,7 @@ class TCacheResult(object):
                     if len(ips) > 3:
                         gwsname = ips[3]
                     ipint = from_string(ips[0])
+                    # 如果为google ip,每次都需要检查，如果不是，则跳过检查
                     if not checkvalidssldomain(ips[2],gwsname):
                         okresult.add(ipint)
                         if ips[0] in self.filegwsipset:
@@ -613,23 +649,31 @@ class RamdomIP(threading.Thread):
         
     def ramdomip(self):
         lastokresult,lasterrorresult = self.cacheResult.loadLastResult()
-        iplineslist = re.split("\r|\n", ip_str_list)
+        iplineslist = []
         skipokcnt = 0
         skiperrocnt = 0
         iplinelist = []
         totalipcnt = 0
         cacheip = lastokresult | lasterrorresult
-        if os.path.exists(g_exttraipfile):
+        loaddefaultip = False
+        if os.path.exists(g_googleipfile):
             try:
-                fp = open(g_exttraipfile,"r")
+                fp = open(g_googleipfile,"r")
                 linecnt = 0
                 for line in fp:
-                    iplineslist.append(line.strip("\r\n"))
-                    linecnt += 1
+                    if line == 'default':
+                        iplineslist.extend(re.split("\r|\n", ip_str_list))
+                        loaddefaultip = True
+                    else:
+                        iplineslist.append(line.strip("\r\n"))
+                        linecnt += 1
                 fp.close()
-                PRINT("load extra ip ok,line:%d" % linecnt )
+                PRINT("load extra ip ok,line:%d,load default ip: %d" % (linecnt,loaddefaultip))
             except Exception as e:
                 PRINT("load extra ip file error:%s " % str(e) )
+                sys.exit(1)
+        else:
+            iplineslist.extend(re.split("\r|\n", ip_str_list))
         for iplines in iplineslist:
             if len(iplines) == 0 or iplines[0] == '#':
                 continue
