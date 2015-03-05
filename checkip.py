@@ -1028,7 +1028,7 @@ def checkip(ip):
             print "ssl subject: ",cert['subject']
         else:
             print "ssl key: ",cert
-        #c.close()
+        c.close()
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
