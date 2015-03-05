@@ -31,6 +31,20 @@ checkgoogleip
 g_needsorttmpokfile为0
 * 设置默认线程为60(g_maxthreads),默认最大IP延时1500毫秒（g_maxhandletimeout），默认检查可用IP数50(g_maxhandleipcnt)
 * 程序支持优先读取外部IP列表，文件名为googleip.txt,当这个文件存在时，默认不会读取脚本里面的IP列表，如果需要检查里面的IP列表，可以在新一行中填写@default，表示读取脚本预设IP列表
+* **检查SSL证书时，需要检查organizationName为google Inc,其他内容暂时被认为非google ip**
+* 解决使用OpenSSL检查IP时,Ctrl-C无响应的情况
+* 命令增加IP参数，用来检查该IP的ssl证书的情况  
+````
+python checkip.py xxx.xxx.xxx.xxx
+use gevent to check  xxx.xxx.xxx.xxx
+try connect to xxx.xxx.xxx.xxx
+ssl subject:  ((('countryName', u'US'),), (('stateOrProvinceName', u'California'
+),), (('localityName', u'Mountain View'),), (('organizationName', u'Google Inc')
+,), (('commonName', u'google.com'),))
+Exception KeyError: KeyError(41875536,) in <module 'threading' from 'D:\Python27
+\lib\threading.pyc'> ignored
+````
+
 
 使用方法
 -------------

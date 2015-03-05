@@ -90,6 +90,8 @@ if g_usegevent == 1 and g_maxthreads > 1000:
 
 g_ssldomain = ("google.com",)
 g_excludessdomain=()
+#检查组织是否为google，如果有其他名称，需要添加，暂时只发现一个
+g_organizationName = ("Google Inc",)
 
 
 "是否自动删除记录查询成功的非google的IP文件，方便下次跳过连接，0为不删除，1为删除"
@@ -447,6 +449,7 @@ class my_ssl_wrap(object):
         timeout = 0
         domain = None
         gwsname = ""
+        ssl_orgname = ""
         try:
             s = socket.socket()
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -480,8 +483,12 @@ class my_ssl_wrap(object):
                     if subject[0] == "CN":
                         domain = subject[1]
                         haserror = 0
+                    elif subject[0] == "O":
+                        ssl_orgname = subject[1]
                 if domain is None:
                     PRINT("%s can not get CN: %s " % (ip, cert.get_subject().get_components()))
+                if ssl_orgname == "" or ssl_orgname not in g_organizationName:
+                    return domain, costtime,timeout,gwsname,ssl_orgname
                 #尝试发送http请求，获取回应头部的Server字段
                 #if domain is None or isgoolgledomain(domain) == 2:
                 if True:
@@ -491,7 +498,7 @@ class my_ssl_wrap(object):
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
                         domain = "null"
-                return domain, costtime,timeout,gwsname
+                return domain, costtime,timeout,gwsname,ssl_orgname
             else:
                 s.settimeout(g_conntimeout)
                 c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile,
@@ -513,8 +520,16 @@ class my_ssl_wrap(object):
                                 else:
                                     domain = item[1]
                                 haserror = 0
+                            elif item[0] == "organizationName":
+                                if not isinstance(item[1], str):
+                                    ssl_orgname = item[1].encode("utf-8")
+                                else:
+                                    ssl_orgname = item[1]
                     if domain is None:
                         PRINT("%s can not get commonName: %s " % (ip, subjectitems))
+                # 如果组织不在g_organizationName，可能不是google的IP，不能使用
+                if ssl_orgname == "" or ssl_orgname not in g_organizationName:
+                    return domain, costtime,timeout,gwsname,ssl_orgname
                 #尝试发送http请求，获取回应头部的Server字段
                 #if domain is None or isgoolgledomain(domain) == 2:
                 if True:
@@ -524,7 +539,7 @@ class my_ssl_wrap(object):
                     costtime += int(time_end * 1000 - cur_time * 1000)
                     if domain is None and len(gwsname) > 0:
                         domain = "null"
-                return domain, costtime,timeout,gwsname
+                return domain, costtime,timeout,gwsname,ssl_orgname
         except SSLError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
@@ -532,7 +547,7 @@ class my_ssl_wrap(object):
                 timeout = 1
             else:
                 PRINT("SSL Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return domain, costtime,timeout,gwsname
+            return domain, costtime,timeout,gwsname,ssl_orgname
         except IOError as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
@@ -540,12 +555,12 @@ class my_ssl_wrap(object):
                 timeout = 1
             else:
                 PRINT("Catch IO Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return domain, costtime,timeout,gwsname
+            return domain, costtime,timeout,gwsname,ssl_orgname
         except Exception as e:
             time_end = time.time()
             costtime = int(time_end * 1000 - time_begin * 1000)
             PRINT("Catch Exception(%s): %s, times:%d ms " % (ip, e, costtime))
-            return domain, costtime,timeout,gwsname
+            return domain, costtime,timeout,gwsname,ssl_orgname
         finally:
             if g_useOpenSSL:
                 if c:
@@ -630,15 +645,15 @@ class Ping(threading.Thread):
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 ssl_obj = my_ssl_wrap()
-                (ssldomain, costtime,timeout,gwsname) = ssl_obj.getssldomain(self.getName(), ipaddr)
+                (ssldomain, costtime,timeout,gwsname,ssl_orgname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
                     gwsip,cnt = self.cacheResult.addOKIP(costtime, ipaddr, ssldomain,gwsname)
                     if cnt != 0:
-                        PRINT("ip: %s,CN: %s,svr: %s,ok:1,cnt:%d" % (ipaddr, ssldomain,gwsname,cnt))
+                        PRINT("ip: %s,CN: %s,O:%s,svr: %s,ok:1,cnt:%d" % (ipaddr, ssldomain,ssl_orgname,gwsname,cnt))
                     elif gwsip:
-                        PRINT("ip: %s,CN: %s,svr: %s,t:%dms,ok:0" % (ipaddr, ssldomain,gwsname,costtime))
+                        PRINT("ip: %s,CN: %s,O:%s,svr: %s,t:%dms,ok:0" % (ipaddr, ssldomain,ssl_orgname,gwsname,costtime))
                     else:
-                        PRINT("ip: %s,CN: %s,svr: %s,not google" % (ipaddr, ssldomain,gwsname))
+                        PRINT("ip: %s,CN: %s,O:%s,svr: %s,not gae" % (ipaddr, ssldomain,ssl_orgname,gwsname))
                 elif ssldomain is None:
                     self.cacheResult.addFailIP(ipaddr)
             except Empty:
@@ -725,7 +740,7 @@ class RamdomIP(threading.Thread):
                 num += 1
             if num:
                 self.hadaddipcnt += num
-                PRINT("load last google ip cnt: %d" % num)
+                PRINT("load last gae ip cnt: %d" % num)
                 evt_ipramdomstart.set()
                 
         hadIPData = True
@@ -883,8 +898,10 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
         threadlist.append(ping_thread)
     try:
         for p in threadlist:
-            p.join()
+            p.join(5)
     except KeyboardInterrupt:
+        PRINT("try to interrupt process")
+        ipqueue.queue.clear()
         evt_ipramdomend.set()
     cacheResult.close()
     
@@ -983,5 +1000,38 @@ def list_ping():
         sort_tmpokfile(nLastOKFileLineCnt)
 
 
+def checkip(ip):
+    if g_useOpenSSL == 1:
+        print "use PyOpenSSL to check ",ip
+        sslcontext = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
+        sslcontext.set_timeout(30)
+        s = socket.socket()
+        s.connect((ip, 443))
+        c = OpenSSL.SSL.Connection(sslcontext, s)
+        c.set_connect_state()
+        print "%s try to handshake " % ( ip )
+        c.do_handshake()
+        cert = c.get_peer_certificate()
+        print "ssl subject: ",cert.get_subject().get_components()
+        c.shutdown()
+        s.close()
+    elif g_usegevent == 1:
+        print "use gevent to check ",ip
+        s = socket.socket()
+        s.settimeout(10)
+        c = ssl.wrap_socket(s, cert_reqs=ssl.CERT_REQUIRED, ca_certs=g_cacertfile)
+        c.settimeout(10)
+        print( "try connect to %s" % (ip))
+        c.connect((ip, 443))
+        cert = c.getpeercert()
+        if 'subject' in cert:
+            print "ssl subject: ",cert['subject']
+        else:
+            print "ssl key: ",cert
+        #c.close()
+
 if __name__ == '__main__':
-    list_ping()
+    if len(sys.argv) > 1:
+        checkip(sys.argv[1])
+    else:
+        list_ping()
