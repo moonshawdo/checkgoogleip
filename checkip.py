@@ -628,6 +628,7 @@ class my_ssl_wrap(object):
 class Ping(threading.Thread):
     ncount = 0
     ncount_lock = threading.Lock()
+    ipcnt = 0
     __slots__=["checkqueue","cacheResult"]
     def __init__(self,checkqueue,cacheResult):
         threading.Thread.__init__(self)
@@ -644,6 +645,7 @@ class Ping(threading.Thread):
                 addrint = self.queue.get(True,2)
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
+                self.addIPCount()
                 ssl_obj = my_ssl_wrap()
                 (ssldomain, costtime,timeout,gwsname,ssl_orgname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
@@ -679,6 +681,13 @@ class Ping(threading.Thread):
             return Ping.ncount
         finally:
             Ping.ncount_lock.release()
+    @staticmethod 
+    def addIPCount():
+        try:
+            Ping.ncount_lock.acquire()
+            Ping.ipcnt += 1
+        finally:
+            Ping.ncount_lock.release()    
             
             
 class RamdomIP(threading.Thread):
@@ -897,8 +906,14 @@ def checksingleprocess(ipqueue,cacheResult,max_threads):
             break
         threadlist.append(ping_thread)
     try:
-        for p in threadlist:
-            p.join(5)
+        quit = False
+        while not quit:
+            for p in threadlist:
+                if p.is_alive():
+                    p.join(5)
+                elif Ping.getCount() == 0 or cacheResult.queryfinish():
+                    quit = True
+                    break
     except KeyboardInterrupt:
         PRINT("try to interrupt process")
         ipqueue.queue.clear()
@@ -955,6 +970,7 @@ def list_ping():
     if g_usegevent == 1:
         PRINT("support gevent")
 
+    cur_time = time.time()
     checkqueue = Queue()
     cacheResult = TCacheResult()
     lastokresult,lasterrorresult = cacheResult.loadLastResult()
@@ -976,7 +992,7 @@ def list_ping():
     ip_list = cacheResult.getIPResult()
     ip_list.sort()
 
-    PRINT('try to collect ssl result')
+    PRINT('try to collect ssl result,check ip cnt: %d,times:%ds' % (Ping.ipcnt,time.time()-cur_time) )
     op = 'wb'
     if sys.version_info[0] == 3:
         op = 'w'
