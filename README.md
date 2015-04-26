@@ -43,7 +43,9 @@ ssl subject:  ((('countryName', u'US'),), (('stateOrProvinceName', u'California'
 ,), (('commonName', u'google.com'),))
 Exception KeyError: KeyError(41875536,) in <module 'threading' from 'D:\Python27
 \lib\threading.pyc'> ignored
-````
+````  
+* 增加IP黑名单配置，暂时把216开头的IP屏蔽  
+`g_blackiplist = ("216.",)`  
 
 
 使用方法

@@ -92,6 +92,7 @@ g_ssldomain = ("google.com",)
 g_excludessdomain=()
 #检查组织是否为google，如果有其他名称，需要添加，暂时只发现一个
 g_organizationName = ("Google Inc",)
+g_blackiplist = ("216.",)
 
 
 "是否自动删除记录查询成功的非google的IP文件，方便下次跳过连接，0为不删除，1为删除"
@@ -146,7 +147,7 @@ ip_str_list = '''
 210.153.73.20-210.153.73.123|106.162.192.148-106.162.192.187|106.162.198.84-106.162.198.123|106.162.216.20-106.162.216.123
 210.139.253.20-210.139.253.251|111.168.255.20-111.168.255.187|203.165.13.210-203.165.13.251
 61.19.1.30-61.19.1.109|74.125.31.33-74.125.31.60|210.242.125.20-210.242.125.59|203.165.14.210-203.165.14.251
-216.239.32.0/19
+#216.239.32.0/19
 64.233.160.0/19
 66.249.80.0/20
 72.14.192.0/18
@@ -646,6 +647,14 @@ class Ping(threading.Thread):
                 ipaddr = to_string(addrint)
                 self.queue.task_done()
                 self.addIPCount()
+                matchblack = False
+                for blackitem in g_blackiplist:
+                    if ipaddr.startswith(blackitem):
+                        matchblack = True
+                        break
+                if matchblack:
+                    PRINT("ip: %s in blacklist,skip it" % (ipaddr))
+                    continue
                 ssl_obj = my_ssl_wrap()
                 (ssldomain, costtime,timeout,gwsname,ssl_orgname) = ssl_obj.getssldomain(self.getName(), ipaddr)
                 if ssldomain is not None:
