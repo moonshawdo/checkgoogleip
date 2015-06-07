@@ -387,7 +387,7 @@ class TCacheResult(object):
                         continue
                     gwsname = ""
                     if len(ips) > 3:
-                        gwsname = ips[3]
+                        gwsname = " ".join(ips[3:])
                     ipint = from_string(ips[0])
                     # 如果为google ip,每次都需要检查，如果不是，则跳过检查
                     if not checkvalidssldomain(ips[2],gwsname):
